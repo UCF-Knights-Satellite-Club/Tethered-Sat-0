@@ -4,6 +4,8 @@
 #include <Wire.h>
 #include <Adafruit_MMA8451.h>
 #include <Adafruit_Sensor.h>
+#include <Arduino.h>
+
 Adafruit_MMA8451 mma = Adafruit_MMA8451();
 
 //required for BMP390-----------------
@@ -11,11 +13,15 @@ Adafruit_MMA8451 mma = Adafruit_MMA8451();
 #define SEALEVELPRESSURE_HPA (1013.25)
 Adafruit_BMP3XX bmp;
 
+hw_timer_t *datalog_timer = NULL;
 
 // Function initializations:
 void printMMA();
 void printBMP();
 
+void IRAM_ATTR getData() {
+  println("Interrupt triggered")
+}
 
 void setup() {
 
@@ -47,6 +53,11 @@ void setup() {
     bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
     bmp.setOutputDataRate(BMP3_ODR_50_HZ);
 
+    // Setup datalog timer
+    datalog_timer = timerBegin(0, 80, true);
+    timerAttachInterrupt(timer, &getData, true);
+    timerAlarmWrite(datalog_timer, 1000000, true);
+    timerAlarmEnable(datalog_timer);
 }
 
 void loop() {
