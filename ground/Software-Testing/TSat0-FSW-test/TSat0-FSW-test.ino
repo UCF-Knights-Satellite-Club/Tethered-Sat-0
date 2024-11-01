@@ -13,17 +13,26 @@ Adafruit_MMA8451 mma = Adafruit_MMA8451();
 #define SEALEVELPRESSURE_HPA (1013.25)
 Adafruit_BMP3XX bmp;
 
-hw_timer_t *datalog_timer = NULL;
+static TaskHandle_t check_altitude = NULL;
 
 // Function initializations:
 void printMMA();
 void printBMP();
-
-void IRAM_ATTR getData() {
-  println("Interrupt triggered")
-}
+void checkAltitude();
 
 void setup() {
+
+    // Function to create a new task, must be run in setup
+    // Reference: (https://www.youtube.com/watch?v=95yUbClyf3E)
+    xTaskCreatePinnedToCore(
+      checkAltitude,    // Function to call
+      "Check Altitude", // Task name
+      1024,             // Memory allocated
+      NULL,             // Parameters to pass to the function
+      1,                // Priority (higher number = higher priority)
+      &check_altitude,  // Task handle
+      0                 // Core
+    );
 
     Serial.begin(9600);
   
@@ -52,12 +61,6 @@ void setup() {
     bmp.setPressureOversampling(BMP3_OVERSAMPLING_4X);
     bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
     bmp.setOutputDataRate(BMP3_ODR_50_HZ);
-
-    // Setup datalog timer
-    datalog_timer = timerBegin(0, 80, true);
-    timerAttachInterrupt(timer, &getData, true);
-    timerAlarmWrite(datalog_timer, 1000000, true);
-    timerAlarmEnable(datalog_timer);
 }
 
 void loop() {
@@ -139,4 +142,15 @@ void printBMP() {
 
     Serial.println();
     delay(2000);
+}
+
+// A parameter of type (void*) is needed to prevent error when creating the task
+void checkAltitude(void* parameter) {
+  // While loop needed to run forever
+  while (1) {
+    // Check the altitude and do whatever
+    Serial.println("CHECKING THE ALTITUDE");
+    // Delay this task for 500 ms
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+  }
 }
