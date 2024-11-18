@@ -13,7 +13,7 @@
 
 // Pin constants
 #define CAM_CS 17
-#define SCK 14angle of the shaft. On standard servos a parameter value of 1000 is fully counter-clockwise
+#define SCK 14 
 #define MISO 12
 #define MOSI 13
 #define SD_CS 15
@@ -57,15 +57,11 @@ uint8_t imageBuff[PIC_BUFFER_SIZE] = { 0 };
 File myFile;
 
 // Function initializations:
-void recordMMA();
 void recordBMP();
 void BMP_altitude_setup();
 void take_image_save();
 
 // Globals
-
-
-
 float LOCAL_P = 0;
 
 int FILENUM_CAM = 1;   //camera var
@@ -198,11 +194,6 @@ void setup() {
 }
 
 void loop() {
-
-  
-
-
-
 
   if (continuousLoopTime > 10000) {
 
@@ -397,60 +388,6 @@ void recordBMP() {
 
   //Serial.println();
   //delay(2000);
-}
-
-void recordMMA() {
-
-  /*  
-    // Read the 'raw' data in 14-bit counts
-    mma.read();
-    Serial.print("X:\t"); Serial.print(mma.x); 
-    Serial.print("\tY:\t"); Serial.print(mma.y); 
-    Serial.print("\tZ:\t"); Serial.print(mma.z); 
-    Serial.println();
-
-    // Get a new sensor event
-    sensors_event_t event; 
-    mma.getEvent(&event);
-
-    // Display the results (acceleration is measured in m/s^2)
-    Serial.print("X: \t"); Serial.print(event.acceleration.x); Serial.print("\t");
-    Serial.print("Y: \t"); Serial.print(event.acceleration.y); Serial.print("\t");
-    Serial.print("Z: \t"); Serial.print(event.acceleration.z); Serial.print("\t");
-    Serial.println("m/s^2 ");
-    */
-
-  // Get the orientation of the sensor
-  uint8_t o = mma.getOrientation();
-
-  switch (o) {
-    case MMA8451_PL_PUF:
-      Serial.println("Portrait Up Front");
-      break;
-    case MMA8451_PL_PUB:
-      Serial.println("Portrait Up Back");
-      break;
-    case MMA8451_PL_PDF:
-      Serial.println("Portrait Down Front");
-      break;
-    case MMA8451_PL_PDB:
-      Serial.println("Portrait Down Back");
-      break;
-    case MMA8451_PL_LRF:
-      Serial.println("Landscape Right Front");
-      break;
-    case MMA8451_PL_LRB:
-      Serial.println("Landscape Right Back");
-      break;
-    case MMA8451_PL_LLF:
-      Serial.println("Landscape Left Front");
-      break;
-    case MMA8451_PL_LLB:
-      Serial.println("Landscape Left Back");
-      break;
-  }
-  Serial.println();
-  delay(500);
 }
 
 // A parameter of type (void*) is needed to prevent error when creating the task
