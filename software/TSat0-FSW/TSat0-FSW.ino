@@ -13,12 +13,12 @@
 
 // Pin constants
 #define CAM_CS 17
-#define SCK 14 
+#define SCK 14
 #define MISO 12
 #define MOSI 13
 #define SD_CS 15
 #define LED_BUILTIN 2
-#define SERVO_PWM 4
+#define SERVO_PIN 4
 
 // Constants
 #define SEALEVELPRESSURE_HPA (1013.25)
@@ -45,33 +45,13 @@ Adafruit_SSD1306 display(128, 64, &Wire, -1);  //select reset pin (just set to a
 Arducam_Mega cam(CAM_CS);
 Servo servo;
 
-//uint8_t count = 1;
-char name[20] = { 0 };
-File outFile;
-uint8_t imageDataPrev = 0;
-uint8_t imageData = 0;
-uint8_t headFlag = 0;
-unsigned int i = 0;
-uint8_t imageBuff[PIC_BUFFER_SIZE] = { 0 };
-
-File myFile;
-
-// Function initializations:
-void recordBMP();
-void BMP_altitude_setup();
-void take_image_save();
+// Function definitions
+void write_pic(Arducam_Mega &cam, File dest);
 
 // Globals
-float LOCAL_P = 0;
-
-int FILENUM_CAM = 1;   //camera var
-int FILENUM_DATA = 1;  //camera var
-
-String dataString;                                         //string to write to file
-int fileIterator = 0;                                      //filename number
-String fileName = "/EC-" + String(fileIterator) + ".txt";  //filename
-
 static TaskHandle_t check_altitude = NULL;
+int pic_num = 0;
+char base_dir[20];
 
 typedef enum {
   CALIBRATION,  // establishing altitude baseline
@@ -83,22 +63,6 @@ typedef enum {
 
 FlightState flight_state = CALIBRATION;
 int checkCount = 0;
-
-// BMP Globals:
-float temperature;
-float pressure;
-float alt;
-
-float CURRENT_TIME = 0;
-float TIME_STATUS;
-//float PHOTO_TIME_ELAPSED = 0;
-
-float time1 = 0;
-float time2 = 0;
-float singleMainLoopTime = 0;
-float continuousLoopTime = 0;
-
-
 
 void setup() {
   // LED on for entire setup process
@@ -116,7 +80,7 @@ void setup() {
   display.setTextColor(WHITE);
 #endif
   
-  servo.attach(SERVO_PWM);
+  servo.attach(SERVO_PIN);
   servo.write(SERVO_STOW_POS);
 
   // setup CAM
@@ -179,6 +143,16 @@ void setup() {
 
   bmp.performReading();
 
+  // pick base dir
+  int i = 0;
+  do {
+    sprintf(base_dir, "/tsatlog%d", i);
+    i++;
+  } while (SD.exists(base_dir));
+  SD.mkdir(base_dir);
+  Serial.print("Data from this run stored in ");
+  Serial.println(base_dir);
+
   xTaskCreatePinnedToCore(
     checkAltitude,     // Function to call
     "Check Altitude",  // Task name
@@ -193,202 +167,7 @@ void setup() {
   digitalWrite(LED_BUILTIN, LOW);
 }
 
-void loop() {
-
-  if (continuousLoopTime > 10000) {
-
-    //take_image_save();
-    continuousLoopTime = 0;
-  }
-  time1 = millis();
-
-  //float alt;
-  alt = bmp.readAltitude(LOCAL_P);
-
-/*
-#ifdef TEST_MODE
-  // display code:
-  display.clearDisplay();
-  display.drawRoundRect(0, 0, 127, 63, 8, WHITE);
-  display.setRotation(2);
-  display.setCursor(20, 20);
-
-
-
-
-
-
-
-
-
-  //Serial.print("Current altitude = ");
-  //Serial.print(alt);
-  //Serial.println(" m");
-
-  // more display code:
-  display.print(alt);
-  display.print(" m");
-  display.display();
-#endif
-*/
-
-  // function call: read temp. save to global
-  recordBMP();
-
-  // function call: read gyro. save to global
-
-  // if alt = going_up_alt or greater than: parachute_auth_flag = 1
-
-  // if alt = going_down_alt or less than AND parachute_auth_flag = 1: deploy parachute
-
-  // record data
-  //record_data_save();
-
-  time2 = millis();
-  singleMainLoopTime = time2 - time1;
-  continuousLoopTime += singleMainLoopTime;
-}
-
-
-
-
-
-void BMP_altitude_setup() {
-  //double T, P;
-  for (int i = 0; i < 4; i++) {
-    if (!bmp.performReading()) {
-      Serial.println("Failed to perform reading :(");
-      return;
-    }
-
-    delay(2000);
-
-    LOCAL_P = bmp.pressure / 100.0;  //pressure in hPa
-
-    Serial.print("Local init. P = ");
-    Serial.println(LOCAL_P);
-
-    delay(2000);
-  }
-
-  Serial.print("FINAL init. P = ");
-  Serial.println(LOCAL_P);
-}
-
-
-// can write all data to one single .txt file
-void record_data_save() {
-
-
-  myFile = SD.open(fileName, "w");
-
-
-  // dataString format: time, temperature, pressure, altitude, parachute_trig_flag,...
-  // print to file
-  dataString = String(float(millis())) + ", " + String(temperature) + ", " + String(pressure) + ", " + String(alt);  // NOT COMPLETE
-
-  if (myFile) {
-    Serial.println("writing to text file successfully");
-    myFile.println(dataString);
-    myFile.close();  //good
-    Serial.println("Done...");
-  } else {
-    Serial.println("error opening .txt");
-  }
-}
-
-void take_image_save() {
-  Serial.println("START take_image_save");
-
-
-  digitalWrite(LED_BUILTIN, HIGH);
-
-  // Take picture
-  cam.takePicture(CAM_IMAGE_MODE_WQXGA2, CAM_IMAGE_PIX_FMT_JPG);
-
-  // Save image
-  while (cam.getReceivedLength()) {
-    // Store current and previous byte
-    imageDataPrev = imageData;
-    imageData = cam.readByte();
-
-    // Write data to buffer
-    if (headFlag == 1) {
-      imageBuff[i++] = imageData;
-      // When buffer is full, write to file
-      if (i >= PIC_BUFFER_SIZE) {
-        outFile.write(imageBuff, i);
-        i = 0;
-      }
-    }
-    // Initialize file on JPEG file start (0xFFD8)
-    if (imageDataPrev == 0xff && imageData == 0xd8) {
-      headFlag = 1;
-      sprintf(name, "/%d.jpg", FILENUM_CAM);
-
-      // ensure filename does not already exist
-      while (SD.exists(name)) {
-        FILENUM_CAM++;
-        sprintf(name, "/%d.jpg", FILENUM_CAM);
-      }
-
-      //count++;
-
-      //Serial.print(F("Saving image..."));
-      outFile = SD.open(name, "w");
-      if (!outFile) {
-        Serial.println(F("Error"));
-        Serial.println(F("File open failed"));
-        while (1)
-          ;
-      }
-      imageBuff[i++] = imageDataPrev;
-      imageBuff[i++] = imageData;
-    }
-    // Close file on JPEG file ending (0xFFD9)
-    if (imageDataPrev == 0xff && imageData == 0xd9) {
-      headFlag = 0;
-      outFile.write(imageBuff, i);
-      i = 0;
-      outFile.close();
-      //Serial.println(F("Done"));
-      digitalWrite(LED_BUILTIN, LOW);
-      Serial.println("STOP take_image_save");
-      break;
-    }
-  }
-
-  //PHOTO_TIME = millis(); //timestamp of when a photo is taken
-}
-
-
-
-
-void recordBMP() {
-#ifdef TEST_MODE
-  if (!bmp.performReading()) {
-    Serial.println("Failed to perform reading :(");
-    return;
-  }
-#endif
-
-
-  //Serial.print("Temperature = ");
-  //Serial.print(bmp.temperature);
-  //Serial.println(" *C");
-
-  temperature = bmp.temperature;
-
-
-  //Serial.print("Pressure = ");
-  //Serial.print(bmp.pressure / 100.0);
-  //Serial.println(" hPa");
-
-  pressure = bmp.pressure / 100.0;
-
-  //Serial.println();
-  //delay(2000);
-}
+void loop() {}
 
 // A parameter of type (void*) is needed to prevent error when creating the task
 void checkAltitude(void* parameter) {
@@ -407,6 +186,13 @@ void checkAltitude(void* parameter) {
     bmp.performReading();
     float absolute_altitude = bmp.readAltitude(SEALEVELPRESSURE_HPA);
     float altitude_change = absolute_altitude - prev_altitude;
+
+    /* get mma data
+    mma.read();
+    Serial.print("X:\t"); Serial.print(mma.x); 
+    Serial.print("\tY:\t"); Serial.print(mma.y); 
+    Serial.print("\tZ:\t"); Serial.print(mma.z); 
+    */
     
 
     altitude_change_estimate = (ALTITUDE_CHANGE_FILTER_GAIN * prev_altitude_change_estimate) + (1-ALTITUDE_CHANGE_FILTER_GAIN) * altitude_change;
@@ -536,5 +322,54 @@ void checkAltitude(void* parameter) {
 
     // Delay this task for 50 ms (20 Hz)
     vTaskDelay(ALTITUDE_CHECK_DELAY / portTICK_PERIOD_MS);
+  }
+}
+
+void write_pic(Arducam_Mega &cam, File dest) {
+
+  uint8_t count = 1;
+  uint8_t prev_byte = 0;
+  uint8_t cur_byte = 0;
+  uint8_t head_flag = 0;
+  unsigned int i = 0;
+  uint8_t image_buf[PIC_BUFFER_SIZE] = {0};
+
+  while (cam.getReceivedLength())
+  {
+    // Store current and previous byte
+    prev_byte = cur_byte;
+    cur_byte = cam.readByte();
+
+    // Write data to buffer
+    if (head_flag == 1)
+    {
+      image_buf[i++]=cur_byte;
+      // When buffer is full, write to file
+      if (i >= PIC_BUFFER_SIZE)
+      {
+        dest.write(image_buf, i);
+        i = 0;
+      }
+    }
+    // Initialize file on JPEG file start (0xFFD8)
+    if (prev_byte == 0xff && cur_byte == 0xd8)
+    {
+      head_flag = 1;
+      //sprintf(name,"/%d.jpg", count);
+      count++;
+      //Serial.print(F("Saving image..."));
+      image_buf[i++]=prev_byte;
+      image_buf[i++]=cur_byte;
+    }
+    // Close file on JPEG file ending (0xFFD9)
+    if (prev_byte == 0xff && cur_byte == 0xd9)
+    {
+      //headFlag = 0;
+      dest.write(image_buf, i);
+      //i = 0;
+      dest.close();
+      Serial.println(F("Done"));
+      break;
+    }
   }
 }
