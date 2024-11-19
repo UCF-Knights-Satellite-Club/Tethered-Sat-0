@@ -60,7 +60,7 @@ int pic_num = 0;
 char base_dir[20];
 
 int global_tick = 0;
-FILE* dataStorage;
+File dataStorage;
 
 typedef enum
 {
@@ -177,8 +177,12 @@ void setup()
       0                 // Core
   );
 
+  dataStorage = SD.open("/tsatlog0/data.txt", FILE_WRITE);
+  
+
   // LED off once setup complete
   digitalWrite(LED_BUILTIN, LOW);
+
 }
 
 void loop() {}
@@ -344,6 +348,28 @@ void write_pic(Arducam_Mega &cam, File dest)
   }
 }
 
+void log_SD(int index)
+{
+  
+  float x = mma.x;
+  float y = mma.y;
+  float z = mma.z; 
+
+  float accelX = mma.x_g;
+  float accelY = mma.y_g;
+  float accelZ = mma.z_g;
+  
+  if (dataStorage)
+  {
+    dataStorage.printf("%d: %lf, %lf, %lf, %lf, %lf, %lf.\n", index, x,y,z,accelX,accelY,accelZ);
+    dataStorage.close();
+  }
+  else
+  {
+    Serial.println("Error opening file"); 
+  }
+  
+}
 
 /* ================================= */
 
