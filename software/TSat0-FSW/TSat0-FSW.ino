@@ -192,25 +192,25 @@ void checkAltitude(void *parameter)
   int calib_cnt = 0;
   int consistent_reading_count = 0;
   float prev_alt_chng_estim = 0;
-  float alt_chnge_estim = 0;
+  float alt_chng_estim = 0;
 
   while (1)
   {
 
     // Check last altitude
-    float prev_altitude = bmp.readAltitude(SEALEVELPRESSURE_HPA);
+    float prev_alt = bmp.readAltitude(SEALEVELPRESSURE_HPA);
     bmp.performReading(); // Refresh altitude reading
 
     // Get current altitude
-    float absolute_altitude = bmp.readAltitude(SEALEVELPRESSURE_HPA);
-    float altitude_change = absolute_altitude - prev_altitude;
+    float abs_alt = bmp.readAltitude(SEALEVELPRESSURE_HPA);
+    float alt_chng = abs_alt - prev_alt;
 
     // Loss filter, check if altitude change is changing enough to be a state change?
-    altitude_change_estimate = (ALTITUDE_CHANGE_FILTER_GAIN * prev_altitude_change_estimate) + (1 - ALTITUDE_CHANGE_FILTER_GAIN) * altitude_change;
-    prev_altitude_change_estimate = altitude_change_estimate;
+    alt_chng_estim = (ALTITUDE_CHANGE_FILTER_GAIN * prev_alt_chng_estim) + (1 - ALTITUDE_CHANGE_FILTER_GAIN) * alt_chng;
+    prev_alt_chng_estim = alt_chng_estim;
 
     // Altitude relative to start
-    float altitude = absolute_altitude - start_altitude;
+    float alt = abs_alt - start_alt;
 
     // Core state machine
     switch (flight_state)
@@ -218,25 +218,25 @@ void checkAltitude(void *parameter)
     case CALIBRATION:
       /* CALIBRATE: averages measurements to
        * determine a launch altitude. */
-      calibrationRun(&start_altitude, &calibration_count, &prev_altitude_change_estimate, &altitude_change_estimate, &flight_state);
+      calibrationRun(&start_alt, abs_alt, &calib_cnt, &prev_alt_chng_estim, &alt_chng_estim, &flight_state);
       break;
     case PREFLIGHT:
       /* PRE-LAUNCH: waiting on the ground to be released. Detects
        * launch by breaking an altitude rate of change threshold
        * or passing a certain altitude.       - > ASCENT         */
-      preflightRun();
+      preflightRun(alt, &consistent_reading_count, &alt_chng_estim);
       break;
     case ASCENT:
       /* ASCENT: Rising up to the extent of the tether and waiting
        * for the burn wire to trigger and free fall to begin.
        * Detects this by breaking an altitude rate of change
        * threshold (or accelerometer info)    - > FREEFALL       */
-      ascentRun();
+      ascentRun(&consistent_reading_count, &alt_chng_estim);
       break;
     case FREEFALL:
       /* FREE FALL: falling through the air and waiting to
        * hit the parachute deployment altitude.  - > LANDING      */
-      freefallRun();
+      freefallRun(alt);
       break;
     case LANDING:
       /* LANDING: Deploy parachute. Final State. */
@@ -344,89 +344,90 @@ void write_pic(Arducam_Mega &cam, File dest)
   }
 }
 
+
 /* ================================= */
 
 /* ==== STATE MACHINE FUNCTIONS ==== */
 
-void calibrationRun(float *start_alt, int *calib_cnt, float *prev_alt_chng_estim, float *alt_chng_estim, int *flight_state)
+void calibrationRun(float *start_alt, float abs_alt, int *calib_cnt, float *prev_alt_chng_estim, float *alt_chng_estim, FlightState* flight_state)
 {
   // average several readings for baseline then move to PRELAUNCH
-  start_alt += absolute_altitude;
-  calib_cnt++;
+  *start_alt += abs_alt;
+  *calib_cnt++;
 
   Serial.print("Calibrating altitude ");
-  Serial.print(calib_cnt);
+  Serial.print(*calib_cnt);
   Serial.print("/");
   Serial.println(CALIBRATION_COUNT);
 
-  if (calibration_count >= CALIBRATION_COUNT)
+  if (*calib_cnt >= CALIBRATION_COUNT)
   {
-    start_alt /= CALIBRATION_COUNT;
-    prev_alt_chng_estim = 0;
-    alt_chng_estim = 0;
-    flight_state = PREFLIGHT;
+    *start_alt /= CALIBRATION_COUNT;
+    *prev_alt_chng_estim = 0;
+    *alt_chng_estim = 0;
+    *flight_state = PREFLIGHT;
 
     Serial.print("Starting altitude: ");
-    Serial.println(start_altitude);
+    Serial.println(*start_alt);
     Serial.println("Calibration complete, moving to PREFLIGHT");
   }
 }
 
-void preflightRun()
+void preflightRun(float alt, int* consist_read_count, float* alt_chng_estim) 
 {
   // move to ASCENT if altitude is rising fast enough or altitude above threshold
 
-  if (altitude > MAX_PREFLIGHT_ALTITUDE)
+  if (alt > MAX_PREFLIGHT_ALTITUDE)
   {
     flight_state = ASCENT;
-    consistent_reading_count = 0;
+    *consist_read_count = 0;
 
     Serial.println("Max preflight altitude exceeded, moving to ASCENT");
   }
-  else if (altitude_change_estimate > ASCENT_RATE_THRESHOLD)
+  else if (*alt_chng_estim > ASCENT_RATE_THRESHOLD)
   {
-    consistent_reading_count++;
-    if (consistent_reading_count >= CONSISTENT_READING_THRESHOLD)
+    *consist_read_count++;
+    if (*consist_read_count >= CONSISTENT_READING_THRESHOLD)
     {
       flight_state = ASCENT;
-      consistent_reading_count = 0;
+      *consist_read_count = 0;
 
       Serial.println("Ascent speed threshold exceeded, moving to ASCENT");
     }
   }
   else
   {
-    consistent_reading_count = 0;
+    *consist_read_count = 0;
   }
 }
 
-void ascentRun()
+void ascentRun( int* consist_read_count, float* alt_chng_estim)
 {
   // move to FREEFALL if altitude drops fast enough
-  Serial.println(altitude_change_estimate);
-  if (altitude_change_estimate <= FREEFALL_RATE_THRESHOLD)
+  Serial.println(*alt_chng_estim);
+  if (*alt_chng_estim <= FREEFALL_RATE_THRESHOLD)
   {
-    consistent_reading_count++;
+    *consist_read_count++;
     Serial.print("Freefall threshold met: ");
-    Serial.println(consistent_reading_count);
-    if (consistent_reading_count >= CONSISTENT_READING_THRESHOLD)
+    Serial.println(*consist_read_count);
+    if (*consist_read_count >= CONSISTENT_READING_THRESHOLD)
     {
       flight_state = FREEFALL;
 
       digitalWrite(LED_BUILTIN, HIGH);
 
-      consistent_reading_count = 0;
+      *consist_read_count = 0;
 
       Serial.println("Descent speed threshold exceeded, moving to FREEFALL");
     }
   }
   else
   {
-    consistent_reading_count = 0;
+    *consist_read_count = 0;
   }
 }
 
-void freefallRun()
+void freefallRun(float altitude)
 {
   // move to LANDING if below deployment altitude
   if (altitude < PARACHUTE_DEPLOY_ALTITUDE)
