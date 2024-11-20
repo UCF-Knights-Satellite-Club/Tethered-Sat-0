@@ -1,68 +1,86 @@
 #include <SPI.h>
 #include <RH_RF95.h>
+
+//Air
  
 // Singleton instance of the radio driver
 RH_RF95 rf95(4,5);
  
-int led = 13;
- 
+// LED and timing variables
+const int ledPin = LED_BUILTIN;  // Built-in LED pin 
+unsigned long burnTime = 5000;   // Burn time 5 seconds
+uint8_t reply[] = "Burning the wire...";  // msg back to ground
+
 void setup() 
 {
   Serial.begin(115200);
 
   Serial.println("Initializing");
 
-  pinMode(6, OUTPUT);
-  digitalWrite(6, LOW);
-  delay(50);
-  digitalWrite(6, HIGH);
+  while (!Serial);  // Wait for the serial port to be available
 
-  pinMode(led, OUTPUT);   
-  digitalWrite(led, HIGH);  
+  if (!rf95.init()) {
+    Serial.println("RF95 module initialization failed!");
+    while (1);  // Halt if radio initialization fails
+  }
+
+  rf95.setFrequency(915.0);  // Set frequency 
   
-  while (!Serial) ; // Wait for serial port to be available
-  if (!rf95.init())
-    Serial.println("init failed");
-    // Defaults after init are 434.0MHz, 13dBm, Bw = 125 kHz, Cr = 4/5, Sf = 128chips/symbol, CRC on
-  rf95.setFrequency(915.0);
- 
-// The default transmitter power is 13dBm, using PA_BOOST.
-  // If you are using RFM95/96/97/98 modules which uses the PA_BOOST transmitter pin, then 
-  // you can set transmitter powers from 2 to 20 dBm:
-  //driver.setTxPower(23, false);
-  // If you are using Modtronix inAir4 or inAir9, or any other module which uses the
-  // transmitter RFO pins and not the PA_BOOST pins
-  // then you can configure the power transmitter power for 0 to 15 dBm and with useRFO true. 
-  // Failure to do that will result in extremely low transmit powers.
-//  driver.setTxPower(14, true);
+  pinMode(ledPin, OUTPUT);  // Set the LED pin as output
+  digitalWrite(ledPin, LOW);  // LED is initially off
+
+  Serial.println("T-Sat isready to receive messages.");
 }
- 
+
 void loop()
 {
-  if (rf95.available())
-  {
-    // Should be a message for us now   
-    uint8_t buf[RH_RF95_MAX_MESSAGE_LEN];
-    uint8_t len = sizeof(buf);
-    if (rf95.recv(buf, &len))
+  uint8_t buf[RH_RF95_MAX_MESSAGE_LEN];
+  uint8_t len = sizeof(buf);
+
+  // Wait for a message from Ground Station
+  if (rf95.waitAvailableTimeout(3000)) { 
+    //Checks if message was received 
+    if (rf95.recv(buf, &len)) 
     {
-      digitalWrite(led, LOW);
-//      RH_RF95::printBuffer("request: ", buf, len);
-      Serial.print("got request: ");
-      Serial.println((char*)buf);
-      Serial.print("RSSI: ");
-      Serial.println(rf95.lastRssi(), DEC);
-      
-      // Send a reply
-      uint8_t data[] = "Hi francesca!";
-      rf95.send(data, sizeof(data));
-      rf95.waitPacketSent();
-      Serial.println("Sent a reply");
-      digitalWrite(led, HIGH);
-    }
+      // Received a message, print it out and trigger LED action
+      Serial.print("Received message: ");
+      Serial.println((char*)buf);  // Print the received message
+
+      if (strcmp((char*)buf, "BurnWire") == 0) 
+      {
+        // Message is "BurnWire", trigger LED and send response
+
+        // Turn on the LED
+        digitalWrite(ledPin, HIGH);
+        Serial.println("LED is ON (burning)");
+
+        // Delay for burnTime duration
+        delay(burnTime);
+
+        // Turn off the LED
+        digitalWrite(ledPin, LOW);
+        Serial.println("LED is OFF (burn complete)");
+
+        // Send response to Ground Station
+        Serial.println("Sending reply: 'Burning the wire...'");
+        rf95.send(reply, sizeof(reply));
+        rf95.waitPacketSent();  // Wait for transmission to complete
+      }
+    } 
     else
     {
-      Serial.println("recv failed");
+      Serial.println("Receive failed");
     }
+  } 
+  else 
+  {
+    Serial.println("No message received from Ground Station");
   }
+
+  delay(1000);  //optinal delay before checking again 
 }
+
+
+      
+
+ 
