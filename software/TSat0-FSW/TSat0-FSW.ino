@@ -36,8 +36,8 @@
 #define ALTITUDE_CHANGE_FILTER_GAIN 0.8  // between 0 and 1, higher number means each measurement has lower impact on estimate
 #define ACCEL_FILTER_GAIN 0.5
 
-#define SERVO_STOW_POS 180
-#define SERVO_DEPLOY_POS 120
+#define SERVO_STOW_POS 110
+#define SERVO_DEPLOY_POS 180
 
 // Define TEST_MODE to enable test mode
 // #define TEST_MODE

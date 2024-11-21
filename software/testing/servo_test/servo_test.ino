@@ -1,8 +1,8 @@
 #include <ESP32Servo.h>
 
 #define SERVO_PIN 4
-#define SERVO_STOW_POS 180
-#define SERVO_DEPLOY_POS 120
+#define SERVO_STOW_POS 110
+#define SERVO_DEPLOY_POS 180
 
 Servo servo;
 
