@@ -148,7 +148,7 @@ void setup() {
   Serial.println(base_dir);
 
 
-  sprintf(logpath, "%s/data.txt", base_dir);
+  sprintf(logpath, "%s/data.csv", base_dir);
 
 
 
@@ -338,10 +338,6 @@ void log_SD(int index) {
 
   File dataStorage = SD.open(logpath, FILE_APPEND);
 
-  float x = mma.x;
-  float y = mma.y;
-  float z = mma.z;
-
   float accelX = mma.x_g * SENSORS_GRAVITY_STANDARD;
   float accelY = mma.y_g * SENSORS_GRAVITY_STANDARD;
   float accelZ = mma.z_g * SENSORS_GRAVITY_STANDARD;
@@ -349,11 +345,9 @@ void log_SD(int index) {
   if (dataStorage) {
     dataStorage.print(index);
     dataStorage.print(",");
-    dataStorage.print(x);
+    dataStorage.print(bmp.temperature);
     dataStorage.print(",");
-    dataStorage.print(y);
-    dataStorage.print(",");
-    dataStorage.print(z);
+    dataStorage.print(bmp.pressure);
     dataStorage.print(",");
     dataStorage.print(accelX);
     dataStorage.print(",");
