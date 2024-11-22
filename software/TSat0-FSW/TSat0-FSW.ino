@@ -349,6 +349,8 @@ void log_SD(int index) {
     dataStorage.print(",");
     dataStorage.print(bmp.pressure);
     dataStorage.print(",");
+    dataStorage.print(absolute_altitude);
+    dataStorage.print(",");
     dataStorage.print(accelX);
     dataStorage.print(",");
     dataStorage.print(accelY);
