@@ -27,11 +27,11 @@
 #define PIC_BUFFER_SIZE 0xff
 
 #define CALIBRATION_COUNT 20             // how many measurements to average when determining initial altitude
-#define CONSISTENT_READING_THRESHOLD 5   // how many measurements in a row need to agree to change state
+#define CONSISTENT_READING_THRESHOLD 1   // how many measurements in a row need to agree to change state
 #define ASCENT_ACCEL_THRESHOLD 20        // acceleration above which PREFLIGHT moves to ASCENT
 #define MAX_PREFLIGHT_ALTITUDE 3         //20    // altitude where PREFLIGHT automatically switches to ASCENT
 #define ALTITUDE_CHECK_DELAY 50          // ms between altitude checks
-#define FREEFALL_ACCEL_THRESHOLD 2       // acceleration below which to switch from ASCENT to FREEFALL
+#define FREEFALL_ACCEL_THRESHOLD 4       // acceleration below which to switch from ASCENT to FREEFALL
 #define PARACHUTE_DEPLOY_ALTITUDE 10     //80 // altutude to switch from FREEFALL to LANDING
 #define ALTITUDE_CHANGE_FILTER_GAIN 0.8  // between 0 and 1, higher number means each measurement has lower impact on estimate
 #define ACCEL_FILTER_GAIN 0.5
@@ -56,10 +56,11 @@ void preflightRun();
 void ascentRun();
 void freefallRun();
 void landingRun();
-void checkAltitudeCallback(TimerHandle_t xTimer);
+void checkAltitude(void *parameter);
+void log_SD(int index);
 
 // Globals
-static TimerHandle_t check_altitude = NULL;
+static TaskHandle_t check_altitude = NULL;
 int pic_num = 0;
 char base_dir[20];
 float start_altitude = 0;
@@ -69,9 +70,8 @@ float accel_estimate = 0;
 float prev_accel_estimate = 0;
 float absolute_altitude = 0;
 float ground_altitude = 0;
-
-int global_tick = 0;
-File dataStorage;
+char logpath[35];
+int logindex = 0;
 
 typedef enum {
   CALIBRATION,  // establishing altitude baseline
@@ -104,18 +104,17 @@ void setup() {
   cam.begin();
 
   // setup SD
-  /*if (!SD.begin(CS)) {
-        Serial.println(F("Error"));
-        Serial.println(F("Card mount failed"));
-        while(1);
-    }
-    uint8_t cardType = SD.cardType();
-    if(cardType == CARD_NONE){
-        Serial.println(F("Error"));
-        Serial.println(F("No SD card attached"));
-        while (1);
-    }
-    */
+  if (!SD.begin(SD_CS)) {
+    Serial.println(F("Error"));
+    Serial.println(F("Card mount failed"));
+    while (1) {}
+  }
+  uint8_t cardType = SD.cardType();
+  if (cardType == CARD_NONE) {
+    Serial.println(F("Error"));
+    Serial.println(F("No SD card attached"));
+    while (1) {}
+  }
 
   // setup MMA
   if (!mma.begin()) {
@@ -148,20 +147,26 @@ void setup() {
   Serial.print("Data from this run stored in ");
   Serial.println(base_dir);
 
-  dataStorage = SD.open("/tsatlog0/data.txt", FILE_WRITE);
 
-  // Create and start timer for sensor checks
-  check_altitude = xTimerCreate(
-    "Check Altitude",                           // Timer name
-    ALTITUDE_CHECK_DELAY / portTICK_PERIOD_MS,  // Timer period
-    pdTRUE,                                     // Auto reload
-    (void *)0,                                  // Timer id
-    checkAltitudeCallback                       // Timer callback
+  sprintf(logpath, "%s/data.txt", base_dir);
+
+
+
+
+
+  // Create task for sensor checks
+  xTaskCreatePinnedToCore(
+    checkAltitude,     // Function to call
+    "Check Altitude",  // Task name
+    4096,              // Memory allocated
+    NULL,              // Parameters to pass to the function
+    1,                 // Priority (higher number = higher priority)
+    &check_altitude,   // Task handle
+    0                  // Core
   );
 
   // Delay to stop first image from being green
   arducamDelayMs(500);
-  xTimerStart(check_altitude, 0);
 
   // LED off once setup complete
   digitalWrite(LED_BUILTIN, LOW);
@@ -170,8 +175,12 @@ void setup() {
 void loop() {}
 
 // Periodically monitors sensor data and performs state switches
-void checkAltitudeCallback(TimerHandle_t xTimer) {
-  /*
+void checkAltitude(void *parameter) {
+
+  TickType_t last_wake = xTaskGetTickCount();
+
+  while (1) {
+    /*
   Serial.print("absolute alt: ");
   Serial.println(absolute_altitude);
   Serial.print("start alt: ");
@@ -180,96 +189,102 @@ void checkAltitudeCallback(TimerHandle_t xTimer) {
   Serial.println(ground_altitude);
   */
 
-  // Get altitude data
-  bmp.performReading();
-  absolute_altitude = bmp.readAltitude(SEALEVELPRESSURE_HPA);
-  ground_altitude = absolute_altitude - start_altitude;
+    // Get altitude data
+    bmp.performReading();
+    absolute_altitude = bmp.readAltitude(SEALEVELPRESSURE_HPA);
+    ground_altitude = absolute_altitude - start_altitude;
 
-  // Get imu data
-  mma.read();
-  float accel_x = mma.x_g * SENSORS_GRAVITY_STANDARD;
-  float accel_y = mma.y_g * SENSORS_GRAVITY_STANDARD;
-  float accel_z = mma.z_g * SENSORS_GRAVITY_STANDARD;
-  float accel = sqrtf(accel_x * accel_x + accel_y * accel_y + accel_z * accel_z);
+    // Get imu data
+    mma.read();
+    float accel_x = mma.x_g * SENSORS_GRAVITY_STANDARD;
+    float accel_y = mma.y_g * SENSORS_GRAVITY_STANDARD;
+    float accel_z = mma.z_g * SENSORS_GRAVITY_STANDARD;
+    float accel = sqrtf(accel_x * accel_x + accel_y * accel_y + accel_z * accel_z);
 
-  // Lowpass filter, smoothes out noisy data
-  accel_estimate = (ACCEL_FILTER_GAIN * prev_accel_estimate) + (1 - ACCEL_FILTER_GAIN) * accel;
-  prev_accel_estimate = accel_estimate;
+    // Lowpass filter, smoothes out noisy data
+    accel_estimate = (ACCEL_FILTER_GAIN * prev_accel_estimate) + (1 - ACCEL_FILTER_GAIN) * accel;
+    prev_accel_estimate = accel_estimate;
 
-  /*
-  Serial.print("accel:");
-  Serial.println(accel_estimate);
-  */
+    /*
+    Serial.print("accel:");
+    Serial.println(accel_estimate);
+    */
 
-  // Core state machine
-  switch (flight_state) {
-    case CALIBRATION:
-      /* CALIBRATE: averages measurements to
+    // Core state machine
+    switch (flight_state) {
+      case CALIBRATION:
+        /* CALIBRATE: averages measurements to
        * determine a launch altitude. */
-      calibrationRun();
-      break;
-    case PREFLIGHT:
-      /* PRE-LAUNCH: waiting on the ground to be released. Detects
+        calibrationRun();
+        break;
+      case PREFLIGHT:
+        /* PRE-LAUNCH: waiting on the ground to be released. Detects
        * launch by breaking an altitude rate of change threshold
        * or passing a certain altitude.       - > ASCENT         */
-      preflightRun();
-      break;
-    case ASCENT:
-      /* ASCENT: Rising up to the extent of the tether and waiting
+        preflightRun();
+        break;
+      case ASCENT:
+        /* ASCENT: Rising up to the extent of the tether and waiting
        * for the burn wire to trigger and free fall to begin.
        * Detects this by breaking an altitude rate of change
        * threshold (or accelerometer info)    - > FREEFALL       */
-      ascentRun();
-      break;
-    case FREEFALL:
-      /* FREE FALL: falling through the air and waiting to
+        ascentRun();
+        break;
+      case FREEFALL:
+        /* FREE FALL: falling through the air and waiting to
        * hit the parachute deployment altitude.  - > LANDING      */
-      freefallRun();
-      break;
-    case LANDING:
-      /* LANDING: Deploy parachute. Final State. */
-      landingRun();
-      break;
-  }
+        freefallRun();
+        break;
+      case LANDING:
+        /* LANDING: Deploy parachute. Final State. */
+        landingRun();
+        break;
+    }
+
+    log_SD(logindex);
+    logindex++;
 
 #ifdef TEST_MODE
-  // display code:
-  display.clearDisplay();
-  display.drawRoundRect(0, 0, 128, 64, 8, WHITE);
-  display.setRotation(2);
-  display.setCursor(15, 3);
-  if (flight_state != CALIBRATION) {
-    display.setCursor(altitude >= 0 ? 22 : 10, 8);
-    display.print(altitude);
-  } else {
-    display.setCursor(absolute_altitude >= 0 ? 22 : 10, 8);
-    display.print(absolute_altitude);
-  }
-  display.print(" m");
-  display.setCursor(altitude_change_estimate >= 0 ? 22 : 10, 28);
-  display.print(altitude_change_estimate * 1000 / ALTITUDE_CHECK_DELAY);
-  display.print(" m/s");
+    // display code:
+    display.clearDisplay();
+    display.drawRoundRect(0, 0, 128, 64, 8, WHITE);
+    display.setRotation(2);
+    display.setCursor(15, 3);
+    if (flight_state != CALIBRATION) {
+      display.setCursor(altitude >= 0 ? 22 : 10, 8);
+      display.print(altitude);
+    } else {
+      display.setCursor(absolute_altitude >= 0 ? 22 : 10, 8);
+      display.print(absolute_altitude);
+    }
+    display.print(" m");
+    display.setCursor(altitude_change_estimate >= 0 ? 22 : 10, 28);
+    display.print(altitude_change_estimate * 1000 / ALTITUDE_CHECK_DELAY);
+    display.print(" m/s");
 
-  display.setCursor(10, 48);
-  switch (flight_state) {
-    case CALIBRATION:
-      display.print("CALIBRATE");
-      break;
-    case PREFLIGHT:
-      display.print("PREFLIGHT");
-      break;
-    case ASCENT:
-      display.print("ASCENT");
-      break;
-    case FREEFALL:
-      display.print("FREEFALL");
-      break;
-    case LANDING:
-      display.print("LANDING");
-      break;
-  }
-  display.display();
+    display.setCursor(10, 48);
+    switch (flight_state) {
+      case CALIBRATION:
+        display.print("CALIBRATE");
+        break;
+      case PREFLIGHT:
+        display.print("PREFLIGHT");
+        break;
+      case ASCENT:
+        display.print("ASCENT");
+        break;
+      case FREEFALL:
+        display.print("FREEFALL");
+        break;
+      case LANDING:
+        display.print("LANDING");
+        break;
+    }
+    display.display();
 #endif
+
+    vTaskDelayUntil(&last_wake, ALTITUDE_CHECK_DELAY / portTICK_PERIOD_MS);
+  }
 }
 
 
@@ -321,16 +336,30 @@ void write_pic(Arducam_Mega &cam, File dest) {
 
 void log_SD(int index) {
 
+  File dataStorage = SD.open(logpath, FILE_APPEND);
+
   float x = mma.x;
   float y = mma.y;
   float z = mma.z;
 
-  float accelX = mma.x_g;
-  float accelY = mma.y_g;
-  float accelZ = mma.z_g;
+  float accelX = mma.x_g * SENSORS_GRAVITY_STANDARD;
+  float accelY = mma.y_g * SENSORS_GRAVITY_STANDARD;
+  float accelZ = mma.z_g * SENSORS_GRAVITY_STANDARD;
 
   if (dataStorage) {
-    dataStorage.printf("%d: %lf, %lf, %lf, %lf, %lf, %lf.\n", index, x, y, z, accelX, accelY, accelZ);
+    dataStorage.print(index);
+    dataStorage.print(",");
+    dataStorage.print(x);
+    dataStorage.print(",");
+    dataStorage.print(y);
+    dataStorage.print(",");
+    dataStorage.print(z);
+    dataStorage.print(",");
+    dataStorage.print(accelX);
+    dataStorage.print(",");
+    dataStorage.print(accelY);
+    dataStorage.print(",");
+    dataStorage.println(accelZ);
     dataStorage.close();
   } else {
     Serial.println("Error opening file");
