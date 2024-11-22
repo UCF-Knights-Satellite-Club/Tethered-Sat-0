@@ -191,7 +191,7 @@ void checkAltitude(void *parameter) {
 
     // Get altitude data
     bmp.performReading();
-    absolute_altitude = bmp.readAltitude(SEALEVELPRESSURE_HPA);
+    absolute_altitude = calculateAltitude(bmp.pressure);
     ground_altitude = absolute_altitude - start_altitude;
 
     // Get imu data
