@@ -360,6 +360,11 @@ void log_SD(int index) {
   }
 }
 
+float calculateAltitude(float atmospheric) {
+  atmospheric = atmospheric / 100.0;
+  return 44330.0 * (1.0 - pow(atmospheric / SEALEVELPRESSURE_HPA, 0.1903));
+}
+
 /* ================================= */
 
 /* ==== STATE MACHINE FUNCTIONS ==== */
