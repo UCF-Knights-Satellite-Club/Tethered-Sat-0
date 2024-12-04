@@ -61,6 +61,7 @@ void log_SD(int index);
 
 // Globals
 static TaskHandle_t check_altitude = NULL;
+static TaskHandle_t camera_capture = NULL;
 int pic_num = 0;
 char base_dir[20];
 float start_altitude = 0;
@@ -165,6 +166,18 @@ void setup() {
     0                  // Core
   );
 
+  // Create task for taking pictures
+  xTaskCreatePinnedToCore(
+    cameraCapture,     // Function to call
+    "Camera Capture",  // Task name
+    4096,              // Memory allocated
+    NULL,              // Parameters to pass to the function
+    tskIDLE_PRIORITY,  // Priority (higher number = higher priority)
+    &camera_capture,   // Task handle
+    0                  // Core
+  );
+
+
   // Delay to stop first image from being green
   arducamDelayMs(500);
 
@@ -172,7 +185,9 @@ void setup() {
   digitalWrite(LED_BUILTIN, LOW);
 }
 
-void loop() {}
+void loop() {
+  vTaskDelay(1000);
+}
 
 // Periodically monitors sensor data and performs state switches
 void checkAltitude(void *parameter) {
@@ -282,8 +297,22 @@ void checkAltitude(void *parameter) {
     }
     display.display();
 #endif
-
     vTaskDelayUntil(&last_wake, ALTITUDE_CHECK_DELAY / portTICK_PERIOD_MS);
+  }
+}
+
+void cameraCapture(void *parameter) {
+  while (1) {
+    Serial.println("Taking picture");
+    cam.takePicture(CAM_IMAGE_MODE_WQXGA2, CAM_IMAGE_PIX_FMT_JPG);
+    char fp[35];
+    sprintf(fp, "%s/pic%d.jpg", base_dir, pic_num);
+    pic_num++;
+    Serial.println("Saving picture");
+    File file = SD.open(fp, FILE_WRITE);
+    write_pic(cam, file);
+    Serial.print("Picutre saved to ");
+    Serial.println(fp);
   }
 }
 
