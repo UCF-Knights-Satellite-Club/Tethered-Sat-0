@@ -26,7 +26,7 @@
 #define SEALEVELPRESSURE_HPA (1013.25)
 #define PIC_BUFFER_SIZE 254
 #define CAM_IMAGE_MODE CAM_IMAGE_MODE_WQXGA2
-#define SPI_CLOCK_DIV SPI_CLOCK_DIV16
+#define SPI_CLOCK_DIV SPI_CLOCK_DIV8
 #define CALIBRATION_COUNT 20             // how many measurements to average when determining initial altitude
 #define CONSISTENT_READING_THRESHOLD 1   // how many measurements in a row need to agree to change state
 #define ASCENT_ACCEL_THRESHOLD 20        // acceleration above which PREFLIGHT moves to ASCENT
@@ -63,6 +63,7 @@ void log_SD(int index);
 // Globals
 static TaskHandle_t check_altitude = NULL;
 static TaskHandle_t camera_capture = NULL;
+SemaphoreHandle_t spi_mutex = NULL;
 int pic_num = 0;
 char base_dir[20];
 float start_altitude = 0;
@@ -102,9 +103,10 @@ void setup() {
   servo.attach(SERVO_PIN);
   servo.write(SERVO_STOW_POS);
 
+  spi_mutex = xSemaphoreCreateMutex();
+
   // setup CAM
   cam.begin();
-  SPI.setClockDivider(SPI_CLOCK_DIV);
 
   // setup SD
   if (!SD.begin(SD_CS)) {
@@ -118,6 +120,9 @@ void setup() {
     Serial.println(F("No SD card attached"));
     while (1) {}
   }
+
+  // Cam and SD use SPI
+  SPI.setClockDivider(SPI_CLOCK_DIV);
 
   // setup MMA
   if (!mma.begin()) {
@@ -311,13 +316,15 @@ void cameraCapture(void *parameter) {
     sprintf(fp, "%s/pic%d.jpg", base_dir, pic_num);
     pic_num++;
     Serial.println("Saving picture");
-    File file = SD.open(fp, FILE_WRITE);
-    write_pic(cam, file);
-    Serial.print("Picutre saved to ");
-    Serial.println(fp);
+    if (xSemaphoreTake(spi_mutex, portMAX_DELAY) == pdTRUE) {
+      File file = SD.open(fp, FILE_WRITE);
+      xSemaphoreGive(spi_mutex);
+      write_pic(cam, file);
+      Serial.print("Picutre saved to ");
+      Serial.println(fp);
+    }
   }
 }
-
 
 /* ==== UTILITY FUNCTIONS ==== */
 
@@ -333,7 +340,14 @@ void write_pic(Arducam_Mega &cam, File dest) {
 
   while (cam.getReceivedLength()) {
     start_offset = 0;
-    read_len = cam.readBuff(image_buf, PIC_BUFFER_SIZE);
+    if (xSemaphoreTake(spi_mutex, (TickType_t)10) == pdTRUE) {
+      read_len = cam.readBuff(image_buf, PIC_BUFFER_SIZE);
+      xSemaphoreGive(spi_mutex);
+      taskYIELD();
+    } else {
+      Serial.println("WARNING: SPI lock timeout exceeded");
+      return;
+    }
     // Search through buffer for start and end flags
     for (i = 0; i < read_len; i++) {
       // Store current and previous byte
@@ -346,8 +360,15 @@ void write_pic(Arducam_Mega &cam, File dest) {
         Serial.println(i);
         head_flag = 1;
         start_offset = i + 1;
-        dest.write(0xff);
-        dest.write(0xd8);
+        if (xSemaphoreTake(spi_mutex, (TickType_t)10) == pdTRUE) {
+          dest.write(0xff);
+          dest.write(0xd8);
+          xSemaphoreGive(spi_mutex);
+          taskYIELD();
+        } else {
+          Serial.println("WARNING: SPI lock timeout exceeded");
+          return;
+        }
       }
 
       // Close file on JPEG file ending (0xFFD9)
@@ -358,8 +379,14 @@ void write_pic(Arducam_Mega &cam, File dest) {
         Serial.print(start_offset);
         Serial.print(" with len ");
         Serial.println(i + 1 - start_offset);
-        dest.write(image_buf + start_offset, i + 1 - start_offset);
-        dest.close();
+        if (xSemaphoreTake(spi_mutex, (TickType_t)10) == pdTRUE) {
+          dest.write(image_buf + start_offset, i + 1 - start_offset);
+          dest.close();
+          xSemaphoreGive(spi_mutex);
+          taskYIELD();
+        } else {
+          Serial.println("WARNING: SPI lock timeout exceeded");
+        }
         return;
       }
     }
@@ -369,39 +396,56 @@ void write_pic(Arducam_Mega &cam, File dest) {
       Serial.print(start_offset);
       Serial.print(" with len ");
       Serial.println(PIC_BUFFER_SIZE - start_offset);*/
-      dest.write(image_buf + start_offset, read_len - start_offset);
+      if (xSemaphoreTake(spi_mutex, (TickType_t)10) == pdTRUE) {
+        dest.write(image_buf + start_offset, read_len - start_offset);
+        xSemaphoreGive(spi_mutex);
+        taskYIELD();
+      } else {
+        Serial.println("WARNING: SPI lock timeout exceeded");
+        return;
+      }
     }
   }
   // Did not find EOF, corrupted?
   Serial.println("WARNING: Did not find JPEG file ending in image data, possible corruption");
-  dest.close();
+  if (xSemaphoreTake(spi_mutex, (TickType_t)10) == pdTRUE) {
+    dest.close();
+    xSemaphoreGive(spi_mutex);
+    taskYIELD();
+  } else {
+    Serial.println("WARNING: SPI lock timeout exceeded");
+  }
 }
 
 void log_SD(int index) {
-
-  File dataStorage = SD.open(logpath, FILE_APPEND);
-
   float accelX = mma.x_g * SENSORS_GRAVITY_STANDARD;
   float accelY = mma.y_g * SENSORS_GRAVITY_STANDARD;
   float accelZ = mma.z_g * SENSORS_GRAVITY_STANDARD;
 
-  if (dataStorage) {
-    dataStorage.print(index);
-    dataStorage.print(",");
-    dataStorage.print(bmp.temperature);
-    dataStorage.print(",");
-    dataStorage.print(bmp.pressure);
-    dataStorage.print(",");
-    dataStorage.print(absolute_altitude);
-    dataStorage.print(",");
-    dataStorage.print(accelX);
-    dataStorage.print(",");
-    dataStorage.print(accelY);
-    dataStorage.print(",");
-    dataStorage.println(accelZ);
-    dataStorage.close();
+  if (xSemaphoreTake(spi_mutex, (TickType_t)20) == pdTRUE) {
+    File dataStorage = SD.open(logpath, FILE_APPEND);
+    if (dataStorage) {
+      dataStorage.print(index);
+      dataStorage.print(",");
+      dataStorage.print(bmp.temperature);
+      dataStorage.print(",");
+      dataStorage.print(bmp.pressure);
+      dataStorage.print(",");
+      dataStorage.print(absolute_altitude);
+      dataStorage.print(",");
+      dataStorage.print(accelX);
+      dataStorage.print(",");
+      dataStorage.print(accelY);
+      dataStorage.print(",");
+      dataStorage.println(accelZ);
+      dataStorage.close();
+    } else {
+      Serial.println("Error opening file");
+    }
+    xSemaphoreGive(spi_mutex);
+    taskYIELD();
   } else {
-    Serial.println("Error opening file");
+    Serial.println("WARNING: SPI lock timeout exceeded");
   }
 }
 
