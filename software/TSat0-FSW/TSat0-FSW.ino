@@ -24,8 +24,9 @@
 
 // Constants
 #define SEALEVELPRESSURE_HPA (1013.25)
-#define PIC_BUFFER_SIZE 0xff
-
+#define PIC_BUFFER_SIZE 254
+#define CAM_IMAGE_MODE CAM_IMAGE_MODE_WQXGA2
+#define SPI_CLOCK_DIV SPI_CLOCK_DIV16
 #define CALIBRATION_COUNT 20             // how many measurements to average when determining initial altitude
 #define CONSISTENT_READING_THRESHOLD 1   // how many measurements in a row need to agree to change state
 #define ASCENT_ACCEL_THRESHOLD 20        // acceleration above which PREFLIGHT moves to ASCENT
@@ -103,6 +104,7 @@ void setup() {
 
   // setup CAM
   cam.begin();
+  SPI.setClockDivider(SPI_CLOCK_DIV);
 
   // setup SD
   if (!SD.begin(SD_CS)) {
@@ -304,7 +306,7 @@ void checkAltitude(void *parameter) {
 void cameraCapture(void *parameter) {
   while (1) {
     Serial.println("Taking picture");
-    cam.takePicture(CAM_IMAGE_MODE_WQXGA2, CAM_IMAGE_PIX_FMT_JPG);
+    cam.takePicture(CAM_IMAGE_MODE, CAM_IMAGE_PIX_FMT_JPG);
     char fp[35];
     sprintf(fp, "%s/pic%d.jpg", base_dir, pic_num);
     pic_num++;
@@ -321,46 +323,58 @@ void cameraCapture(void *parameter) {
 
 void write_pic(Arducam_Mega &cam, File dest) {
 
-  uint8_t count = 1;
   uint8_t prev_byte = 0;
   uint8_t cur_byte = 0;
   uint8_t head_flag = 0;
   unsigned int i = 0;
   uint8_t image_buf[PIC_BUFFER_SIZE] = { 0 };
+  uint32_t read_len = 0;
+  uint8_t start_offset = 0;
 
   while (cam.getReceivedLength()) {
-    // Store current and previous byte
-    prev_byte = cur_byte;
-    cur_byte = cam.readByte();
+    start_offset = 0;
+    read_len = cam.readBuff(image_buf, PIC_BUFFER_SIZE);
+    // Search through buffer for start and end flags
+    for (i = 0; i < read_len; i++) {
+      // Store current and previous byte
+      prev_byte = cur_byte;
+      cur_byte = image_buf[i];
+      
+      // Start writing at JPEG file start (0xFFD8)
+      if (prev_byte == 0xff && cur_byte == 0xd8) {
+        Serial.print("Found jpeg start at i=");
+        Serial.println(i);
+        head_flag = 1;
+        start_offset = i + 1;
+        dest.write(0xff);
+        dest.write(0xd8);
+      }
 
-    // Write data to buffer
-    if (head_flag == 1) {
-      image_buf[i++] = cur_byte;
-      // When buffer is full, write to file
-      if (i >= PIC_BUFFER_SIZE) {
-        dest.write(image_buf, i);
-        i = 0;
+      // Close file on JPEG file ending (0xFFD9)
+      if (head_flag && prev_byte == 0xff && cur_byte == 0xd9) {
+        Serial.print("Found jpeg end at i=");
+        Serial.println(i);
+        Serial.print("Writing buffer from ");
+        Serial.print(start_offset);
+        Serial.print(" with len ");
+        Serial.println(i + 1 - start_offset);
+        dest.write(image_buf + start_offset, i + 1 - start_offset);
+        dest.close();
+        return;
       }
     }
-    // Initialize file on JPEG file start (0xFFD8)
-    if (prev_byte == 0xff && cur_byte == 0xd8) {
-      head_flag = 1;
-      // sprintf(name,"/%d.jpg", count);
-      count++;
-      // Serial.print(F("Saving image..."));
-      image_buf[i++] = prev_byte;
-      image_buf[i++] = cur_byte;
-    }
-    // Close file on JPEG file ending (0xFFD9)
-    if (prev_byte == 0xff && cur_byte == 0xd9) {
-      // headFlag = 0;
-      dest.write(image_buf, i);
-      // i = 0;
-      dest.close();
-      Serial.println(F("Done"));
-      break;
+    // No end flag found, write the full buffer
+    if (head_flag) {
+      /*Serial.print("Writing buffer from ");
+      Serial.print(start_offset);
+      Serial.print(" with len ");
+      Serial.println(PIC_BUFFER_SIZE - start_offset);*/
+      dest.write(image_buf + start_offset, read_len - start_offset);
     }
   }
+  // Did not find EOF, corrupted?
+  Serial.println("WARNING: Did not find JPEG file ending in image data, possible corruption");
+  dest.close();
 }
 
 void log_SD(int index) {
