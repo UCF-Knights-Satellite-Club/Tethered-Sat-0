@@ -30,24 +30,21 @@
 #define SEALEVELPRESSURE_HPA (1013.25)        // standard pressure at sea level
 #define PIC_BUFFER_SIZE 254                   // buffer size to store images, must be less than 255
 #define CAM_IMAGE_MODE CAM_IMAGE_MODE_WQXGA2  // ArduCam image mode
-#define SPI_CLOCK_DIV SPI_CLOCK_DIV16
-#define LOG_QUEUE_SIZE 20  // how many entries to store before dropping data
-#define SPI_MUTEX_WAIT 20  // how many ms to wait for SPI mutex lock before giving up
-#define LOG_DELAY 100      // how many ms to wait between logging to SD
-
-#define CALIBRATION_COUNT 20            // how many measurements to average when determining initial altitude
-#define CONSISTENT_READING_THRESHOLD 1  // how many measurements in a row need to agree to change state
-#define ASCENT_ACCEL_THRESHOLD 20       // acceleration above which PREFLIGHT moves to ASCENT
-#define MAX_PREFLIGHT_ALTITUDE 3        //20         // altitude where PREFLIGHT automatically switches to ASCENT
-#define ALTITUDE_CHECK_DELAY 50         // ms between altitude checks
-#define FREEFALL_ACCEL_THRESHOLD 4      // acceleration below which to switch from ASCENT to FREEFALL
-#define PARACHUTE_DEPLOY_ALTITUDE 10    //80     // altutude to switch from FREEFALL to LANDING
-
-#define ALTITUDE_CHANGE_FILTER_GAIN 0.8  // between 0 and 1, higher number means each measurement has lower impact on estimate
-#define ACCEL_FILTER_GAIN 0.5            // same as altitude
-
-#define SERVO_STOW_POS 110    // initial servo position
-#define SERVO_DEPLOY_POS 180  // parachute deploy position
+#define SPI_CLOCK_DIV SPI_CLOCK_DIV16         // SPI clock divider, lowers SPI clock speeds to prevent image corruption
+#define LOG_QUEUE_SIZE 20                     // how many entries to store before dropping data
+#define SPI_MUTEX_WAIT 20                     // how many ms to wait for SPI mutex lock before giving up
+#define LOG_DELAY 100                         // how many ms to wait between logging to SD
+#define CALIBRATION_COUNT 20                  // how many measurements to average when determining initial altitude
+#define CONSISTENT_READING_THRESHOLD 1        // how many measurements in a row need to agree to change state
+#define ASCENT_ACCEL_THRESHOLD 20             // acceleration above which PREFLIGHT moves to ASCENT
+#define MAX_PREFLIGHT_ALTITUDE 3 //20         // altitude where PREFLIGHT automatically switches to ASCENT
+#define ALTITUDE_CHECK_DELAY 50               // ms between altitude checks
+#define FREEFALL_ACCEL_THRESHOLD 4            // acceleration below which to switch from ASCENT to FREEFALL
+#define PARACHUTE_DEPLOY_ALTITUDE 10 //80     // altutude to switch from FREEFALL to LANDING
+#define ALTITUDE_CHANGE_FILTER_GAIN 0.8       // between 0 and 1, higher number means each measurement has lower impact on estimate
+#define ACCEL_FILTER_GAIN 0.5                 // same as altitude
+#define SERVO_STOW_POS 110                    // initial servo position
+#define SERVO_DEPLOY_POS 180                  // parachute deploy position
 
 // Define TEST_MODE to enable test mode
 // #define TEST_MODE
@@ -148,13 +145,11 @@ void setup() {
 
   // setup SD
   if (!SD.begin(SD_CS)) {
-    Serial.println(F("Error"));
     Serial.println(F("Card mount failed"));
     while (1) {}
   }
   uint8_t cardType = SD.cardType();
   if (cardType == CARD_NONE) {
-    Serial.println(F("Error"));
     Serial.println(F("No SD card attached"));
     while (1) {}
   }
@@ -244,17 +239,19 @@ void loop() {
 
 // Periodically monitors sensor data and performs state switches
 void checkAltitude(void *parameter) {
+  vTaskSuspend(NULL); // Initially suspend task
+  
   TickType_t last_wake = xTaskGetTickCount();
 
   while (1) {
     /*
-  Serial.print("absolute alt: ");
-  Serial.println(absolute_altitude);
-  Serial.print("start alt: ");
-  Serial.println(start_altitude);
-  Serial.print("alt: ");
-  Serial.println(ground_altitude);
-  */
+    Serial.print("absolute alt: ");
+    Serial.println(absolute_altitude);
+    Serial.print("start alt: ");
+    Serial.println(start_altitude);
+    Serial.print("alt: ");
+    Serial.println(ground_altitude);
+    */
 
     // Get altitude data
     bmp.performReading();
@@ -370,7 +367,7 @@ void checkAltitude(void *parameter) {
 }
 
 void cameraCapture(void *parameter) {
-  vTaskSuspend(NULL);
+  vTaskSuspend(NULL); // Initially suspend task
   while (1) {
     Serial.println("Taking picture");
     cam.takePicture(CAM_IMAGE_MODE, CAM_IMAGE_PIX_FMT_JPG);
@@ -389,7 +386,7 @@ void cameraCapture(void *parameter) {
 }
 
 void logData(void *parameter) {
-  vTaskSuspend(NULL);
+  vTaskSuspend(NULL); // Initially suspend task
   while (1) {
     if (uxQueueMessagesWaiting(log_queue) > 0) {
       if (xSemaphoreTake(spi_mutex, SPI_MUTEX_WAIT) == pdTRUE) {
@@ -418,7 +415,6 @@ void logData(void *parameter) {
         xSemaphoreGive(spi_mutex);
       }
     }
-
     vTaskDelay(LOG_DELAY / portTICK_PERIOD_MS);
   }
 }
@@ -484,6 +480,7 @@ void write_pic(Arducam_Mega &cam, File dest) {
         return;
       }
     }
+
     // No end flag found, write the full buffer
     if (head_flag) {
       /*Serial.print("Writing buffer from ");
@@ -499,6 +496,7 @@ void write_pic(Arducam_Mega &cam, File dest) {
       }
     }
   }
+
   // Did not find EOF, corrupted?
   Serial.println("WARNING: Did not find JPEG file ending in image data, possible corruption");
   if (xSemaphoreTake(spi_mutex, SPI_MUTEX_WAIT) == pdTRUE) {
