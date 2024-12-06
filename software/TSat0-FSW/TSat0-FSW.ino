@@ -19,26 +19,35 @@
 #define MISO 12
 #define MOSI 13
 #define SD_CS 15
-#define LED_BUILTIN 2
 #define SERVO_PIN 4
 
-// Constants
-#define SEALEVELPRESSURE_HPA (1013.25)
-#define PIC_BUFFER_SIZE 254
-#define CAM_IMAGE_MODE CAM_IMAGE_MODE_WQXGA2
-#define SPI_CLOCK_DIV SPI_CLOCK_DIV8
-#define CALIBRATION_COUNT 20             // how many measurements to average when determining initial altitude
-#define CONSISTENT_READING_THRESHOLD 1   // how many measurements in a row need to agree to change state
-#define ASCENT_ACCEL_THRESHOLD 20        // acceleration above which PREFLIGHT moves to ASCENT
-#define MAX_PREFLIGHT_ALTITUDE 3         //20    // altitude where PREFLIGHT automatically switches to ASCENT
-#define ALTITUDE_CHECK_DELAY 50          // ms between altitude checks
-#define FREEFALL_ACCEL_THRESHOLD 4       // acceleration below which to switch from ASCENT to FREEFALL
-#define PARACHUTE_DEPLOY_ALTITUDE 10     //80 // altutude to switch from FREEFALL to LANDING
-#define ALTITUDE_CHANGE_FILTER_GAIN 0.8  // between 0 and 1, higher number means each measurement has lower impact on estimate
-#define ACCEL_FILTER_GAIN 0.5
+// Depending on the selected board, may or may not be defined already
+#ifndef LED_BUILTIN
+#define LED_BUILTIN 2
+#endif
 
-#define SERVO_STOW_POS 110
-#define SERVO_DEPLOY_POS 180
+// Constants
+#define SEALEVELPRESSURE_HPA (1013.25)        // standard pressure at sea level
+#define PIC_BUFFER_SIZE 254                   // buffer size to store images, must be less than 255
+#define CAM_IMAGE_MODE CAM_IMAGE_MODE_WQXGA2  // ArduCam image mode
+#define SPI_CLOCK_DIV SPI_CLOCK_DIV16
+#define LOG_QUEUE_SIZE 20  // how many entries to store before dropping data
+#define SPI_MUTEX_WAIT 20  // how many ms to wait for SPI mutex lock before giving up
+#define LOG_DELAY 100      // how many ms to wait between logging to SD
+
+#define CALIBRATION_COUNT 20            // how many measurements to average when determining initial altitude
+#define CONSISTENT_READING_THRESHOLD 1  // how many measurements in a row need to agree to change state
+#define ASCENT_ACCEL_THRESHOLD 20       // acceleration above which PREFLIGHT moves to ASCENT
+#define MAX_PREFLIGHT_ALTITUDE 3        //20         // altitude where PREFLIGHT automatically switches to ASCENT
+#define ALTITUDE_CHECK_DELAY 50         // ms between altitude checks
+#define FREEFALL_ACCEL_THRESHOLD 4      // acceleration below which to switch from ASCENT to FREEFALL
+#define PARACHUTE_DEPLOY_ALTITUDE 10    //80     // altutude to switch from FREEFALL to LANDING
+
+#define ALTITUDE_CHANGE_FILTER_GAIN 0.8  // between 0 and 1, higher number means each measurement has lower impact on estimate
+#define ACCEL_FILTER_GAIN 0.5            // same as altitude
+
+#define SERVO_STOW_POS 110    // initial servo position
+#define SERVO_DEPLOY_POS 180  // parachute deploy position
 
 // Define TEST_MODE to enable test mode
 // #define TEST_MODE
@@ -58,12 +67,15 @@ void ascentRun();
 void freefallRun();
 void landingRun();
 void checkAltitude(void *parameter);
-void log_SD(int index);
+void cameraCapture(void *parameter);
+void logData(void *parameter);
 
 // Globals
-static TaskHandle_t check_altitude = NULL;
-static TaskHandle_t camera_capture = NULL;
-SemaphoreHandle_t spi_mutex = NULL;
+static TaskHandle_t check_altitude;
+static TaskHandle_t log_data;
+static TaskHandle_t camera_capture;
+static SemaphoreHandle_t spi_mutex;
+static QueueHandle_t log_queue;
 int pic_num = 0;
 char base_dir[20];
 float start_altitude = 0;
@@ -76,6 +88,7 @@ float ground_altitude = 0;
 char logpath[35];
 int logindex = 0;
 
+// Describes current flight state
 typedef enum {
   CALIBRATION,  // establishing altitude baseline
   PREFLIGHT,    // waiting for launch
@@ -84,6 +97,17 @@ typedef enum {
   LANDING,      // parachute deployed
 } FlightState;
 
+// All the data that gets logged
+typedef struct {
+  int index;
+  double temperature;
+  double pressure;
+  float altitude;
+  float accel_x;
+  float accel_y;
+  float accel_z;
+} DataPoint;
+
 FlightState flight_state = CALIBRATION;
 
 void setup() {
@@ -91,21 +115,35 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
 
+  // init serial
   Serial.begin(115200);
 
-#ifdef TEST_MODE
-  // setup OLED
-  display.begin(SSD1306_SWITCHCAPVCC, 0x3c);  // i2c address
-  display.setTextSize(2);
-  display.setTextColor(WHITE);
-#endif
+  // setup OLED if test mode is enabled
+  #ifdef TEST_MODE
+    display.begin(SSD1306_SWITCHCAPVCC, 0x3c);  // i2c address
+    display.setTextSize(2);
+    display.setTextColor(WHITE);
+  #endif
 
+  // init servo
   servo.attach(SERVO_PIN);
   servo.write(SERVO_STOW_POS);
 
-  spi_mutex = xSemaphoreCreateMutex();
+  // Queues data to be logged to SD
+  log_queue = xQueueCreate(20, sizeof(DataPoint));
+  if (log_queue == NULL) {
+    Serial.print("Unable to create log queue");
+    while (1) {}
+  }
 
-  // setup CAM
+  // Used to prevent simultaneous SPI access from causing problems
+  spi_mutex = xSemaphoreCreateMutex();
+  if (spi_mutex == NULL) {
+    Serial.print("Unable to create SPI mutex");
+    while (1) {}
+  }
+
+  // init ArduCam
   cam.begin();
 
   // setup SD
@@ -121,7 +159,7 @@ void setup() {
     while (1) {}
   }
 
-  // Cam and SD use SPI
+  // Must be called after setting up SD and ArduCam since they will reset this
   SPI.setClockDivider(SPI_CLOCK_DIV);
 
   // setup MMA
@@ -154,13 +192,7 @@ void setup() {
   SD.mkdir(base_dir);
   Serial.print("Data from this run stored in ");
   Serial.println(base_dir);
-
-
   sprintf(logpath, "%s/data.csv", base_dir);
-
-
-
-
 
   // Create task for sensor checks
   xTaskCreatePinnedToCore(
@@ -168,37 +200,50 @@ void setup() {
     "Check Altitude",  // Task name
     4096,              // Memory allocated
     NULL,              // Parameters to pass to the function
-    1,                 // Priority (higher number = higher priority)
+    2,                 // Priority (higher number = higher priority)
     &check_altitude,   // Task handle
     0                  // Core
   );
 
   // Create task for taking pictures
   xTaskCreatePinnedToCore(
-    cameraCapture,     // Function to call
-    "Camera Capture",  // Task name
-    4096,              // Memory allocated
-    NULL,              // Parameters to pass to the function
-    tskIDLE_PRIORITY,  // Priority (higher number = higher priority)
-    &camera_capture,   // Task handle
-    0                  // Core
-  );
+    cameraCapture,
+    "Camera Capture",
+    4096,
+    NULL,
+    tskIDLE_PRIORITY,  // Lowest possible priority, see https://www.freertos.org/Documentation/02-Kernel/02-Kernel-features/01-Tasks-and-co-routines/15-Idle-task
+    &camera_capture,
+    0);
 
+  // Create task for logging data to SD
+  xTaskCreatePinnedToCore(
+    logData,
+    "Log Data",
+    4096,
+    NULL,
+    1,
+    &log_data,
+    0);
 
   // Delay to stop first image from being green
-  arducamDelayMs(500);
+  vTaskDelay(500 / portTICK_PERIOD_MS);
+
+  // Unsuspend tasks
+  vTaskResume(check_altitude);
+  vTaskResume(camera_capture);
+  vTaskResume(log_data);
 
   // LED off once setup complete
   digitalWrite(LED_BUILTIN, LOW);
 }
 
+// Empty loop function, all functionality in custom tasks
 void loop() {
-  vTaskDelay(1000);
+  vTaskDelay(1000 / portTICK_PERIOD_MS);
 }
 
 // Periodically monitors sensor data and performs state switches
 void checkAltitude(void *parameter) {
-
   TickType_t last_wake = xTaskGetTickCount();
 
   while (1) {
@@ -263,52 +308,69 @@ void checkAltitude(void *parameter) {
         break;
     }
 
-    log_SD(logindex);
+    if (uxQueueSpacesAvailable(log_queue) >= 1) {
+      DataPoint data_point = {
+        logindex,
+        bmp.temperature,
+        bmp.pressure,
+        absolute_altitude,
+        accel_x,
+        accel_y,
+        accel_z
+      };
+      if (xQueueSendToBack(log_queue, &data_point, 0) == pdFALSE) {
+        Serial.println("Failed to add data to queue");
+      }
+    } else {
+      Serial.println("WARNING: Log queue is full, some data is getting dropped");
+    }
+
     logindex++;
 
-#ifdef TEST_MODE
-    // display code:
-    display.clearDisplay();
-    display.drawRoundRect(0, 0, 128, 64, 8, WHITE);
-    display.setRotation(2);
-    display.setCursor(15, 3);
-    if (flight_state != CALIBRATION) {
-      display.setCursor(altitude >= 0 ? 22 : 10, 8);
-      display.print(altitude);
-    } else {
-      display.setCursor(absolute_altitude >= 0 ? 22 : 10, 8);
-      display.print(absolute_altitude);
-    }
-    display.print(" m");
-    display.setCursor(altitude_change_estimate >= 0 ? 22 : 10, 28);
-    display.print(altitude_change_estimate * 1000 / ALTITUDE_CHECK_DELAY);
-    display.print(" m/s");
+    #ifdef TEST_MODE
+      // display code:
+      display.clearDisplay();
+      display.drawRoundRect(0, 0, 128, 64, 8, WHITE);
+      display.setRotation(2);
+      display.setCursor(15, 3);
+      if (flight_state != CALIBRATION) {
+        display.setCursor(altitude >= 0 ? 22 : 10, 8);
+        display.print(altitude);
+      } else {
+        display.setCursor(absolute_altitude >= 0 ? 22 : 10, 8);
+        display.print(absolute_altitude);
+      }
+      display.print(" m");
+      display.setCursor(altitude_change_estimate >= 0 ? 22 : 10, 28);
+      display.print(altitude_change_estimate * 1000 / ALTITUDE_CHECK_DELAY);
+      display.print(" m/s");
 
-    display.setCursor(10, 48);
-    switch (flight_state) {
-      case CALIBRATION:
-        display.print("CALIBRATE");
-        break;
-      case PREFLIGHT:
-        display.print("PREFLIGHT");
-        break;
-      case ASCENT:
-        display.print("ASCENT");
-        break;
-      case FREEFALL:
-        display.print("FREEFALL");
-        break;
-      case LANDING:
-        display.print("LANDING");
-        break;
-    }
-    display.display();
-#endif
+      display.setCursor(10, 48);
+      switch (flight_state) {
+        case CALIBRATION:
+          display.print("CALIBRATE");
+          break;
+        case PREFLIGHT:
+          display.print("PREFLIGHT");
+          break;
+        case ASCENT:
+          display.print("ASCENT");
+          break;
+        case FREEFALL:
+          display.print("FREEFALL");
+          break;
+        case LANDING:
+          display.print("LANDING");
+          break;
+      }
+      display.display();
+    #endif
     vTaskDelayUntil(&last_wake, ALTITUDE_CHECK_DELAY / portTICK_PERIOD_MS);
   }
 }
 
 void cameraCapture(void *parameter) {
+  vTaskSuspend(NULL);
   while (1) {
     Serial.println("Taking picture");
     cam.takePicture(CAM_IMAGE_MODE, CAM_IMAGE_PIX_FMT_JPG);
@@ -316,13 +378,48 @@ void cameraCapture(void *parameter) {
     sprintf(fp, "%s/pic%d.jpg", base_dir, pic_num);
     pic_num++;
     Serial.println("Saving picture");
-    if (xSemaphoreTake(spi_mutex, portMAX_DELAY) == pdTRUE) {
+    if (xSemaphoreTake(spi_mutex, SPI_MUTEX_WAIT) == pdTRUE) {
       File file = SD.open(fp, FILE_WRITE);
       xSemaphoreGive(spi_mutex);
       write_pic(cam, file);
       Serial.print("Picutre saved to ");
       Serial.println(fp);
     }
+  }
+}
+
+void logData(void *parameter) {
+  vTaskSuspend(NULL);
+  while (1) {
+    if (uxQueueMessagesWaiting(log_queue) > 0) {
+      if (xSemaphoreTake(spi_mutex, SPI_MUTEX_WAIT) == pdTRUE) {
+        File log_file = SD.open(logpath, FILE_APPEND);
+        if (log_file) {
+          DataPoint data_point;
+          while (xQueueReceive(log_queue, &data_point, 0) == pdTRUE) {
+            log_file.print(data_point.index);
+            log_file.print(",");
+            log_file.print(data_point.temperature);
+            log_file.print(",");
+            log_file.print(data_point.pressure);
+            log_file.print(",");
+            log_file.print(data_point.altitude);
+            log_file.print(",");
+            log_file.print(data_point.accel_x);
+            log_file.print(",");
+            log_file.print(data_point.accel_y);
+            log_file.print(",");
+            log_file.println(data_point.accel_z);
+          }
+          log_file.close();
+        } else {
+          Serial.println("Error opening file");
+        }
+        xSemaphoreGive(spi_mutex);
+      }
+    }
+
+    vTaskDelay(LOG_DELAY / portTICK_PERIOD_MS);
   }
 }
 
@@ -340,10 +437,9 @@ void write_pic(Arducam_Mega &cam, File dest) {
 
   while (cam.getReceivedLength()) {
     start_offset = 0;
-    if (xSemaphoreTake(spi_mutex, (TickType_t)10) == pdTRUE) {
+    if (xSemaphoreTake(spi_mutex, SPI_MUTEX_WAIT) == pdTRUE) {
       read_len = cam.readBuff(image_buf, PIC_BUFFER_SIZE);
       xSemaphoreGive(spi_mutex);
-      taskYIELD();
     } else {
       Serial.println("WARNING: SPI lock timeout exceeded");
       return;
@@ -353,18 +449,17 @@ void write_pic(Arducam_Mega &cam, File dest) {
       // Store current and previous byte
       prev_byte = cur_byte;
       cur_byte = image_buf[i];
-      
+
       // Start writing at JPEG file start (0xFFD8)
       if (prev_byte == 0xff && cur_byte == 0xd8) {
         Serial.print("Found jpeg start at i=");
         Serial.println(i);
         head_flag = 1;
         start_offset = i + 1;
-        if (xSemaphoreTake(spi_mutex, (TickType_t)10) == pdTRUE) {
+        if (xSemaphoreTake(spi_mutex, SPI_MUTEX_WAIT) == pdTRUE) {
           dest.write(0xff);
           dest.write(0xd8);
           xSemaphoreGive(spi_mutex);
-          taskYIELD();
         } else {
           Serial.println("WARNING: SPI lock timeout exceeded");
           return;
@@ -379,11 +474,10 @@ void write_pic(Arducam_Mega &cam, File dest) {
         Serial.print(start_offset);
         Serial.print(" with len ");
         Serial.println(i + 1 - start_offset);
-        if (xSemaphoreTake(spi_mutex, (TickType_t)10) == pdTRUE) {
+        if (xSemaphoreTake(spi_mutex, SPI_MUTEX_WAIT) == pdTRUE) {
           dest.write(image_buf + start_offset, i + 1 - start_offset);
           dest.close();
           xSemaphoreGive(spi_mutex);
-          taskYIELD();
         } else {
           Serial.println("WARNING: SPI lock timeout exceeded");
         }
@@ -396,10 +490,9 @@ void write_pic(Arducam_Mega &cam, File dest) {
       Serial.print(start_offset);
       Serial.print(" with len ");
       Serial.println(PIC_BUFFER_SIZE - start_offset);*/
-      if (xSemaphoreTake(spi_mutex, (TickType_t)10) == pdTRUE) {
+      if (xSemaphoreTake(spi_mutex, SPI_MUTEX_WAIT) == pdTRUE) {
         dest.write(image_buf + start_offset, read_len - start_offset);
         xSemaphoreGive(spi_mutex);
-        taskYIELD();
       } else {
         Serial.println("WARNING: SPI lock timeout exceeded");
         return;
@@ -408,42 +501,9 @@ void write_pic(Arducam_Mega &cam, File dest) {
   }
   // Did not find EOF, corrupted?
   Serial.println("WARNING: Did not find JPEG file ending in image data, possible corruption");
-  if (xSemaphoreTake(spi_mutex, (TickType_t)10) == pdTRUE) {
+  if (xSemaphoreTake(spi_mutex, SPI_MUTEX_WAIT) == pdTRUE) {
     dest.close();
     xSemaphoreGive(spi_mutex);
-    taskYIELD();
-  } else {
-    Serial.println("WARNING: SPI lock timeout exceeded");
-  }
-}
-
-void log_SD(int index) {
-  float accelX = mma.x_g * SENSORS_GRAVITY_STANDARD;
-  float accelY = mma.y_g * SENSORS_GRAVITY_STANDARD;
-  float accelZ = mma.z_g * SENSORS_GRAVITY_STANDARD;
-
-  if (xSemaphoreTake(spi_mutex, (TickType_t)20) == pdTRUE) {
-    File dataStorage = SD.open(logpath, FILE_APPEND);
-    if (dataStorage) {
-      dataStorage.print(index);
-      dataStorage.print(",");
-      dataStorage.print(bmp.temperature);
-      dataStorage.print(",");
-      dataStorage.print(bmp.pressure);
-      dataStorage.print(",");
-      dataStorage.print(absolute_altitude);
-      dataStorage.print(",");
-      dataStorage.print(accelX);
-      dataStorage.print(",");
-      dataStorage.print(accelY);
-      dataStorage.print(",");
-      dataStorage.println(accelZ);
-      dataStorage.close();
-    } else {
-      Serial.println("Error opening file");
-    }
-    xSemaphoreGive(spi_mutex);
-    taskYIELD();
   } else {
     Serial.println("WARNING: SPI lock timeout exceeded");
   }
