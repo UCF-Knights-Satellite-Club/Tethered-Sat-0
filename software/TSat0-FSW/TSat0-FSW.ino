@@ -35,7 +35,6 @@
 #define SPI_MUTEX_WAIT 20                     // how many ms to wait for SPI mutex lock before giving up
 #define LOG_DELAY 100                         // how many ms to wait between logging to SD
 #define CALIBRATION_COUNT 20                  // how many measurements to average when determining initial altitude
-#define CONSISTENT_READING_THRESHOLD 1        // how many measurements in a row need to agree to change state
 #define ASCENT_ACCEL_THRESHOLD 20             // acceleration above which PREFLIGHT moves to ASCENT
 #define MAX_PREFLIGHT_ALTITUDE 3 //20         // altitude where PREFLIGHT automatically switches to ASCENT
 #define ALTITUDE_CHECK_DELAY 50               // ms between altitude checks
@@ -77,7 +76,6 @@ int pic_num = 0;
 char base_dir[20];
 float start_altitude = 0;
 int calibration_count = 0;
-int consistent_reading_count = 0;
 float accel_estimate = 0;
 float prev_accel_estimate = 0;
 float absolute_altitude = 0;
@@ -541,37 +539,20 @@ void preflightRun() {
 
   if (ground_altitude >= MAX_PREFLIGHT_ALTITUDE) {
     flight_state = ASCENT;
-    consistent_reading_count = 0;
-
     Serial.println("Max preflight altitude exceeded, moving to ASCENT");
-  } else if (accel_estimate >= ASCENT_ACCEL_THRESHOLD) {
-    consistent_reading_count++;
-    if (consistent_reading_count >= CONSISTENT_READING_THRESHOLD) {
-      flight_state = ASCENT;
-      consistent_reading_count = 0;
 
-      Serial.println("Acceleration threshold met, moving to ASCENT");
-    }
-  } else {
-    consistent_reading_count = 0;
+  } else if (accel_estimate >= ASCENT_ACCEL_THRESHOLD) {
+    flight_state = ASCENT;
+    Serial.println("Acceleration threshold met, moving to ASCENT");
   }
 }
 
 void ascentRun() {
   // move to FREEFALL if acceleration is close to 0
   if (accel_estimate <= FREEFALL_ACCEL_THRESHOLD) {
-    consistent_reading_count++;
-    if (consistent_reading_count >= CONSISTENT_READING_THRESHOLD) {
-      flight_state = FREEFALL;
-
-      digitalWrite(LED_BUILTIN, HIGH);
-
-      consistent_reading_count = 0;
-
-      Serial.println("Acceleration threshold met, moving to FREEFALL");
-    }
-  } else {
-    consistent_reading_count = 0;
+    flight_state = FREEFALL;
+    digitalWrite(LED_BUILTIN, HIGH);
+    Serial.println("Acceleration threshold met, moving to FREEFALL");
   }
 }
 
