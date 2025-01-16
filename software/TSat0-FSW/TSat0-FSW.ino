@@ -76,8 +76,13 @@ int pic_num = 0;
 char base_dir[20];
 float start_altitude = 0;
 int calibration_count = 0;
-float accel_estimate = 0;
-float prev_accel_estimate = 0;
+float accel_x_estimate = 0;
+float prev_accel_x_estimate = 0;
+float accel_y_estimate = 0;
+float prev_accel_y_estimate = 0;
+float accel_z_estimate = 0;
+float prev_accel_z_estimate = 0;
+float accel_magnitude = 0;
 float absolute_altitude = 0;
 float ground_altitude = 0;
 char logpath[35];
@@ -187,6 +192,8 @@ void setup() {
   Serial.println(base_dir);
   sprintf(logpath, "%s/data.csv", base_dir);
 
+
+
   // Create task for sensor checks
   xTaskCreatePinnedToCore(
     checkAltitude,     // Function to call
@@ -261,11 +268,19 @@ void checkAltitude(void *parameter) {
     float accel_x = mma.x_g * SENSORS_GRAVITY_STANDARD;
     float accel_y = mma.y_g * SENSORS_GRAVITY_STANDARD;
     float accel_z = mma.z_g * SENSORS_GRAVITY_STANDARD;
-    float accel = sqrtf(accel_x * accel_x + accel_y * accel_y + accel_z * accel_z);
 
     // Lowpass filter, smoothes out noisy data
-    accel_estimate = (ACCEL_FILTER_GAIN * prev_accel_estimate) + (1 - ACCEL_FILTER_GAIN) * accel;
-    prev_accel_estimate = accel_estimate;
+    accel_x_estimate = (ACCEL_FILTER_GAIN * prev_accel_x_estimate) + (1 - ACCEL_FILTER_GAIN) * accel_x;
+    prev_accel_x_estimate = accel_x_estimate;
+
+    accel_y_estimate = (ACCEL_FILTER_GAIN * prev_accel_y_estimate) + (1 - ACCEL_FILTER_GAIN) * accel_y;
+    prev_accel_y_estimate = accel_y_estimate;
+
+    accel_z_estimate = (ACCEL_FILTER_GAIN * prev_accel_z_estimate) + (1 - ACCEL_FILTER_GAIN) * accel_z;
+    prev_accel_z_estimate = accel_z_estimate;
+
+
+    accel_magnitude = sqrtf(accel_x_estimate * accel_x_estimate + accel_y_estimate * accel_y_estimate + accel_z_estimate * accel_z_estimate);
 
     /*
     Serial.print("accel:");
@@ -541,7 +556,7 @@ void preflightRun() {
     flight_state = ASCENT;
     Serial.println("Max preflight altitude exceeded, moving to ASCENT");
 
-  } else if (accel_estimate >= ASCENT_ACCEL_THRESHOLD) {
+  } else if (accel_magnitude >= ASCENT_ACCEL_THRESHOLD) {
     flight_state = ASCENT;
     Serial.println("Acceleration threshold met, moving to ASCENT");
   }
@@ -549,7 +564,7 @@ void preflightRun() {
 
 void ascentRun() {
   // move to FREEFALL if acceleration is close to 0
-  if (accel_estimate <= FREEFALL_ACCEL_THRESHOLD) {
+  if (accel_magnitude <= FREEFALL_ACCEL_THRESHOLD) {
     flight_state = FREEFALL;
     digitalWrite(LED_BUILTIN, HIGH);
     Serial.println("Acceleration threshold met, moving to FREEFALL");
