@@ -157,10 +157,10 @@ void setup() {
 
   // setup SD
   if (!SD.begin(SD_CS)) {
-    Serial.println(F("Card mount failed"));
+    Serial.println("Card mount failed");
     sd_fail = true;
   } else if (SD.cardType() == CARD_NONE) {
-    Serial.println(F("No SD card attached"));
+    Serial.println("No SD card attached");
     sd_fail = true;
   }
 
