@@ -39,8 +39,9 @@
 #define MAX_PREFLIGHT_ALTITUDE 3 //20         // altitude where PREFLIGHT automatically switches to ASCENT
 #define ALTITUDE_CHECK_DELAY 50               // ms between altitude checks
 #define FREEFALL_ACCEL_THRESHOLD 4            // acceleration below which to switch from ASCENT to FREEFALL
-#define PARACHUTE_DEPLOY_ALTITUDE 10 //80     // altutude to switch from FREEFALL to LANDING
-#define ALTITUDE_CHANGE_FILTER_GAIN 0.8       // between 0 and 1, higher number means each measurement has lower impact on estimate
+#define FREEFALL_VELOCITY_THRESHOLD 0.25       // decent speed above which to swtich from ASCENT to FREEFALL
+#define PARACHUTE_DEPLOY_ALTITUDE 15 //80     // altutude to switch from FREEFALL to LANDING
+#define ALTITUDE_DELTA_FILTER_GAIN 0.95       // between 0 and 1, higher number means each measurement has lower impact on estimate
 #define ACCEL_FILTER_GAIN 0.5                 // same as altitude
 #define SERVO_STOW_POS 110                    // initial servo position
 #define SERVO_DEPLOY_POS 180                  // parachute deploy position
@@ -77,6 +78,8 @@ int pic_num = 0;
 char base_dir[20];
 float start_altitude = 0;
 int calibration_count = 0;
+float altitude_delta_estimate = 0;
+float prev_altitude_delta_estimate = 0;
 float accel_x_estimate = 0;
 float prev_accel_x_estimate = 0;
 float accel_y_estimate = 0;
@@ -86,6 +89,8 @@ float prev_accel_z_estimate = 0;
 float accel_magnitude = 0;
 float absolute_altitude = 0;
 float ground_altitude = 0;
+float altitude_delta = 0;
+float prev_altitude = 0;
 char logpath[35];
 int logindex = 0;
 
@@ -107,6 +112,9 @@ typedef struct {
   float accel_x;
   float accel_y;
   float accel_z;
+  float accel_filtered;
+  float ascent_velocity_filtered;
+  FlightState flight_state;
 } DataPoint;
 
 FlightState flight_state = CALIBRATION;
@@ -196,7 +204,7 @@ void setup() {
     // Write CSV header
     File log_file = SD.open(logpath, FILE_APPEND);
     if (log_file) {
-      log_file.println("index,temp,pressure,altitude,accelx,accely,accelz");
+      log_file.println("index,temp,pressure,altitude,accelx,accely,accelz,accel_filtered,ascent_velocity,state");
       log_file.close();
     }
   }
@@ -273,6 +281,8 @@ void checkAltitude(void *parameter) {
     bmp.performReading();
     absolute_altitude = calculateAltitude(bmp.pressure);
     ground_altitude = absolute_altitude - start_altitude;
+    altitude_delta = absolute_altitude - prev_altitude;
+    prev_altitude = absolute_altitude;
 
     // Get imu data
     mma.read();
@@ -281,6 +291,9 @@ void checkAltitude(void *parameter) {
     float accel_z = mma.z_g * SENSORS_GRAVITY_STANDARD;
 
     // Lowpass filter, smoothes out noisy data
+    altitude_delta_estimate = (ALTITUDE_DELTA_FILTER_GAIN * prev_altitude_delta_estimate) + (1 - ALTITUDE_DELTA_FILTER_GAIN) * altitude_delta;
+    prev_altitude_delta_estimate = altitude_delta_estimate;
+
     accel_x_estimate = (ACCEL_FILTER_GAIN * prev_accel_x_estimate) + (1 - ACCEL_FILTER_GAIN) * accel_x;
     prev_accel_x_estimate = accel_x_estimate;
 
@@ -335,10 +348,13 @@ void checkAltitude(void *parameter) {
           logindex,
           bmp.temperature,
           bmp.pressure,
-          absolute_altitude,
+          ground_altitude,
           accel_x,
           accel_y,
-          accel_z
+          accel_z,
+          accel_magnitude,
+          altitude_delta_estimate * 1000 / ALTITUDE_CHECK_DELAY,
+          flight_state
         };
         if (xQueueSendToBack(log_queue, &data_point, 0) == pdFALSE) {
           Serial.println("Failed to add data to queue");
@@ -364,8 +380,8 @@ void checkAltitude(void *parameter) {
         display.print(absolute_altitude);
       }
       display.print(" m");
-      display.setCursor(altitude_change_estimate >= 0 ? 22 : 10, 28);
-      display.print(altitude_change_estimate * 1000 / ALTITUDE_CHECK_DELAY);
+      display.setCursor(altitude_delta_estimate >= 0 ? 22 : 10, 28);
+      display.print(altitude_delta_estimate * 1000 / ALTITUDE_CHECK_DELAY);
       display.print(" m/s");
 
       display.setCursor(10, 48);
@@ -432,7 +448,13 @@ void logData(void *parameter) {
             log_file.print(",");
             log_file.print(data_point.accel_y);
             log_file.print(",");
-            log_file.println(data_point.accel_z);
+            log_file.print(data_point.accel_z);
+            log_file.print(",");
+            log_file.print(data_point.accel_filtered);
+            log_file.print(",");
+            log_file.print(data_point.ascent_velocity_filtered);
+            log_file.print(",");
+            log_file.println(flight_state);
           }
           log_file.close();
         } else {
@@ -581,6 +603,12 @@ void ascentRun() {
     flight_state = FREEFALL;
     digitalWrite(LED_BUILTIN, HIGH);
     Serial.println("Acceleration threshold met, moving to FREEFALL");
+  }
+  // move to FREEFALL if altitude is changing faast enough
+  if (altitude_delta_estimate * 1000 / ALTITUDE_CHECK_DELAY < -FREEFALL_VELOCITY_THRESHOLD) {
+    flight_state = FREEFALL;
+    digitalWrite(LED_BUILTIN, HIGH);
+    Serial.println("Decent velocity threshold met, moving to FREEFALL");
   }
 }
 
