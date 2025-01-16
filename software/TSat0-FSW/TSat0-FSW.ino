@@ -72,6 +72,7 @@ static TaskHandle_t log_data;
 static TaskHandle_t camera_capture;
 static SemaphoreHandle_t spi_mutex;
 static QueueHandle_t log_queue;
+bool sd_fail = false;
 int pic_num = 0;
 char base_dir[20];
 float start_altitude = 0;
@@ -125,9 +126,43 @@ void setup() {
     display.setTextColor(WHITE);
   #endif
 
+  // setup MMA
+  if (!mma.begin()) {
+    Serial.println("Couldnt start MMA");
+    while (1) {}
+  }
+  mma.setRange(MMA8451_RANGE_2_G);
+
+  // setup BMP
+  if (!bmp.begin_I2C()) {  // hardware I2C mode, can pass in address & alt Wire
+    Serial.println("Couldn't start BMP");
+    while (1) {}
+  }
+
+  // Set up oversampling and filter initialization
+  bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
+  bmp.setPressureOversampling(BMP3_OVERSAMPLING_4X);
+  bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
+  bmp.setOutputDataRate(BMP3_ODR_50_HZ);
+
+  // Preload data into bmp
+  bmp.performReading();
+
   // init servo
   servo.attach(SERVO_PIN);
   servo.write(SERVO_STOW_POS);
+
+  // init ArduCam, must be done before SD setup so CS lines are configured properly
+  cam.begin();
+
+  // setup SD
+  if (!SD.begin(SD_CS)) {
+    Serial.println(F("Card mount failed"));
+    sd_fail = true;
+  } else if (SD.cardType() == CARD_NONE) {
+    Serial.println(F("No SD card attached"));
+    sd_fail = true;
+  }
 
   // Queues data to be logged to SD
   log_queue = xQueueCreate(20, sizeof(DataPoint));
@@ -143,56 +178,28 @@ void setup() {
     while (1) {}
   }
 
-  // init ArduCam
-  cam.begin();
-
-  // setup SD
-  if (!SD.begin(SD_CS)) {
-    Serial.println(F("Card mount failed"));
-    while (1) {}
-  }
-  uint8_t cardType = SD.cardType();
-  if (cardType == CARD_NONE) {
-    Serial.println(F("No SD card attached"));
-    while (1) {}
-  }
-
   // Must be called after setting up SD and ArduCam since they will reset this
   SPI.setClockDivider(SPI_CLOCK_DIV);
 
-  // setup MMA
-  if (!mma.begin()) {
-    Serial.println("Couldnt start MMA");
-    while (1) {}
+  if (!sd_fail) {
+    // Pick base directory for this flight
+    int i = 0;
+    do {
+      sprintf(base_dir, "/tsatlog%d", i);
+      i++;
+    } while (SD.exists(base_dir));
+    SD.mkdir(base_dir);
+    Serial.print("Data from this run stored in ");
+    Serial.println(base_dir);
+    sprintf(logpath, "%s/data.csv", base_dir);
+
+    // Write CSV header
+    File log_file = SD.open(logpath, FILE_APPEND);
+    if (log_file) {
+      log_file.println("index,temp,pressure,altitude,accelx,accely,accelz");
+      log_file.close();
+    }
   }
-  mma.setRange(MMA8451_RANGE_2_G);
-
-  // setup BMP
-  if (!bmp.begin_I2C()) {  // hardware I2C mode, can pass in address & alt Wire
-    Serial.println("Couldn't start BMP");
-    while (1) {}
-  }
-  // Set up oversampling and filter initialization
-  bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
-  bmp.setPressureOversampling(BMP3_OVERSAMPLING_4X);
-  bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
-  bmp.setOutputDataRate(BMP3_ODR_50_HZ);
-
-  // Preload data into bmp
-  bmp.performReading();
-
-  // Pick base directory for this flight
-  int i = 0;
-  do {
-    sprintf(base_dir, "/tsatlog%d", i);
-    i++;
-  } while (SD.exists(base_dir));
-  SD.mkdir(base_dir);
-  Serial.print("Data from this run stored in ");
-  Serial.println(base_dir);
-  sprintf(logpath, "%s/data.csv", base_dir);
-
-
 
   // Create task for sensor checks
   xTaskCreatePinnedToCore(
@@ -213,7 +220,8 @@ void setup() {
     NULL,
     tskIDLE_PRIORITY,  // Lowest possible priority, see https://www.freertos.org/Documentation/02-Kernel/02-Kernel-features/01-Tasks-and-co-routines/15-Idle-task
     &camera_capture,
-    0);
+    0
+  );
 
   // Create task for logging data to SD
   xTaskCreatePinnedToCore(
@@ -223,15 +231,18 @@ void setup() {
     NULL,
     1,
     &log_data,
-    0);
+    0
+  );
 
   // Delay to stop first image from being green
   vTaskDelay(500 / portTICK_PERIOD_MS);
 
   // Unsuspend tasks
   vTaskResume(check_altitude);
-  vTaskResume(camera_capture);
-  vTaskResume(log_data);
+  if (!sd_fail) {
+    vTaskResume(camera_capture);
+    vTaskResume(log_data);
+  }
 
   // LED off once setup complete
   digitalWrite(LED_BUILTIN, LOW);
@@ -318,24 +329,26 @@ void checkAltitude(void *parameter) {
         break;
     }
 
-    if (uxQueueSpacesAvailable(log_queue) >= 1) {
-      DataPoint data_point = {
-        logindex,
-        bmp.temperature,
-        bmp.pressure,
-        absolute_altitude,
-        accel_x,
-        accel_y,
-        accel_z
-      };
-      if (xQueueSendToBack(log_queue, &data_point, 0) == pdFALSE) {
-        Serial.println("Failed to add data to queue");
+    if (!sd_fail) {
+      if (uxQueueSpacesAvailable(log_queue) >= 1) {
+        DataPoint data_point = {
+          logindex,
+          bmp.temperature,
+          bmp.pressure,
+          absolute_altitude,
+          accel_x,
+          accel_y,
+          accel_z
+        };
+        if (xQueueSendToBack(log_queue, &data_point, 0) == pdFALSE) {
+          Serial.println("Failed to add data to queue");
+        }
+      } else {
+        Serial.println("WARNING: Log queue is full, some data is getting dropped");
       }
-    } else {
-      Serial.println("WARNING: Log queue is full, some data is getting dropped");
-    }
 
-    logindex++;
+      logindex++;
+    }
 
     #ifdef TEST_MODE
       // display code:
