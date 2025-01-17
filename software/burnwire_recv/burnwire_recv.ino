@@ -21,8 +21,8 @@ RH_RF95 rf95(5, 21);
 // Button Pin and Variables
 int ButtonValue = 0; 
 int lastButtonValue = 0;
-int Button = 3;          // Pin where the button is connected
-int led = LED_BUILTIN;   // Built-in LED ESP32
+int Button = 2;          // Pin where the button is connected
+//int led = LED_BUILTIN;   // Built-in LED ESP32
 
 // Message to be sent when the button is pressed
 uint8_t burn[] = "BurnWire"; 
@@ -31,7 +31,7 @@ void setup()
 {
   //If not using external resistor INPUT_PULLUP
   pinMode(Button, INPUT);  // Set button pin as input
-  pinMode(led, OUTPUT);    // Set LED pin as output
+  //pinMode(led, OUTPUT);    // Set LED pin as output
   
   Serial.begin(115200);
   while (!Serial) ;  // Wait for serial port to be available
@@ -66,9 +66,9 @@ void loop()
     rf95.waitPacketSent();  // Wait for transmission to complete
 
     //Turn on LED to indicate its sending 
-    digitalWrite(led, HIGH); 
+    //digitalWrite(led, HIGH); 
     delay(5000);               // Keep LED on for 5 secs.
-    digitalWrite(led, LOW);   
+    //digitalWrite(led, LOW);   
 
     // Print confirmation of message
     Serial.println("Message sent to T-Sat: 'BurnWire'");
