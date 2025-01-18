@@ -32,6 +32,8 @@ void setup()
   //If not using external resistor INPUT_PULLUP
   pinMode(Button, INPUT);  // Set button pin as input
   //pinMode(led, OUTPUT);    // Set LED pin as output
+  pinMode(4, OUTPUT);
+  digitalWrite(4, HIGH);
   
   Serial.begin(115200);
   while (!Serial) ;  // Wait for serial port to be available

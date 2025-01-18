@@ -17,7 +17,10 @@ void setup()
 
   Serial.println("Initializing");
 
-  while (!Serial);  // Wait for the serial port to be available
+  pinMode(6, OUTPUT);
+  digitalWrite(6, HIGH);
+
+  //while (!Serial);  // Wait for the serial port to be available
 
   if (!rf95.init()) {
     Serial.println("RF95 module initialization failed!");
@@ -28,6 +31,8 @@ void setup()
   
   pinMode(ledPin, OUTPUT);  // Set the LED pin as output
   digitalWrite(ledPin, LOW);  // LED is initially off
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
 
   Serial.println("T-Sat isready to receive messages.");
 }
@@ -52,6 +57,8 @@ void loop()
 
         // Turn on the LED
         digitalWrite(ledPin, HIGH);
+        digitalWrite(LED_BUILTIN, LOW);
+
         Serial.println("LED is ON (burning)");
 
         // Delay for burnTime duration
@@ -59,6 +66,7 @@ void loop()
 
         // Turn off the LED
         digitalWrite(ledPin, LOW);
+        digitalWrite(LED_BUILTIN, HIGH);
         Serial.println("LED is OFF (burn complete)");
 
         // Send response to Ground Station
