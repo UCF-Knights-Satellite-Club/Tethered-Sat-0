@@ -7,7 +7,7 @@
 RH_RF95 rf95(4,5);
  
 // LED and timing variables
-const int ledPin = LED_BUILTIN;  // Built-in LED pin 
+const int ledPin = 2;  // Built-in LED pin 
 unsigned long burnTime = 5000;   // Burn time 5 seconds
 uint8_t reply[] = "Burning the wire...";  // msg back to ground
 
