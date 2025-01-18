@@ -57,6 +57,9 @@ void loop()
         // Message is "BurnWire", trigger LED and send response
         rf95.send(reply_start, sizeof(reply_start));
 
+        // Disable radio during burn
+        rf95.sleep();
+
         // Burn!
         digitalWrite(BURN_PIN, HIGH);
         digitalWrite(LED_BUILTIN, LOW);
@@ -70,6 +73,9 @@ void loop()
         digitalWrite(BURN_PIN, LOW);
         digitalWrite(LED_BUILTIN, HIGH);
         Serial.println("Burn wire is OFF (burn complete)");
+
+        // Wake up radio
+        rf95.available();
 
         // Send response to Ground Station
         Serial.println("Sending reply: 'Burning the wire...'");
