@@ -5,7 +5,9 @@
 #define RF95_G0 5
 #define RF95_RST 6
 #define BURN_PIN 2
-#define BURN_MS 5000 // Burn time 5 seconds
+#define BURN_MS 10000 // Burn time 10 seconds
+
+#define RF95_EN 1
  
 // Singleton instance of the radio driver
 RH_RF95 rf95(RF95_CS, RF95_G0);
@@ -21,6 +23,10 @@ void setup()
   // Disable radio reset
   pinMode(RF95_RST, OUTPUT);
   digitalWrite(RF95_RST, HIGH);
+
+  // run EN pin high (powers on radio)
+  pinMode(RF95_EN, OUTPUT);
+  digitalWrite(RF95_EN, HIGH);
 
   if (!rf95.init()) {
     Serial.println("RF95 module initialization failed!");
@@ -58,7 +64,11 @@ void loop()
         rf95.send(reply_start, sizeof(reply_start));
 
         // Disable radio during burn
-        rf95.sleep();
+        //rf95.sleep();
+
+        // power off radio (by pulling EN pin low)
+        //digitalWrite(RF95_EN, LOW);
+        //delay(2000);
 
         // Burn!
         digitalWrite(BURN_PIN, HIGH);
@@ -89,6 +99,6 @@ void loop()
   } 
   else 
   {
-    Serial.println("No message received from Ground Station");
+    Serial.println("No message received from Ground Station TEST");
   }
 }
