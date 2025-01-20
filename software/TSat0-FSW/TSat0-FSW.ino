@@ -38,8 +38,8 @@
 #define ASCENT_ACCEL_THRESHOLD 20             // acceleration above which PREFLIGHT moves to ASCENT
 #define MAX_PREFLIGHT_ALTITUDE 3 //20         // altitude where PREFLIGHT automatically switches to ASCENT
 #define ALTITUDE_CHECK_DELAY 50               // ms between altitude checks
-#define FREEFALL_ACCEL_THRESHOLD 4            // acceleration below which to switch from ASCENT to FREEFALL
-#define FREEFALL_VELOCITY_THRESHOLD 0.25       // decent speed above which to swtich from ASCENT to FREEFALL
+#define FREEFALL_ACCEL_THRESHOLD 2            // acceleration below which to switch from ASCENT to FREEFALL
+#define FREEFALL_VELOCITY_THRESHOLD 1         // decent speed above which to swtich from ASCENT to FREEFALL
 #define PARACHUTE_DEPLOY_ALTITUDE 15 //80     // altutude to switch from FREEFALL to LANDING
 #define ALTITUDE_DELTA_FILTER_GAIN 0.95       // between 0 and 1, higher number means each measurement has lower impact on estimate
 #define ACCEL_FILTER_GAIN 0.5                 // same as altitude
@@ -454,7 +454,7 @@ void logData(void *parameter) {
             log_file.print(",");
             log_file.print(data_point.ascent_velocity_filtered);
             log_file.print(",");
-            log_file.println(flight_state);
+            log_file.println(data_point.flight_state);
           }
           log_file.close();
         } else {
