@@ -30,8 +30,9 @@
 #define SEALEVELPRESSURE_HPA (1013.25)        // standard pressure at sea level
 #define PIC_BUFFER_SIZE 254                   // buffer size to store images, must be less than 255
 #define CAM_IMAGE_MODE CAM_IMAGE_MODE_WQXGA2  // ArduCam image mode
-#define SPI_CLOCK_DIV SPI_CLOCK_DIV16         // SPI clock divider, lowers SPI clock speeds to prevent image corruption
-#define LOG_QUEUE_SIZE 20                     // how many entries to store before dropping data
+#define SPI_CLOCK_FREQ 16000000               // SPI clock frequency (ArduCAM and SD card)
+#define I2C_CLOCK_FREQ 50000                  // I2C clock frequency (BMP and MMA)
+#define LOG_QUEUE_SIZE 50                     // how many entries to store before dropping data
 #define SPI_MUTEX_WAIT 20                     // how many ms to wait for SPI mutex lock before giving up
 #define LOG_DELAY 100                         // how many ms to wait between logging to SD
 #define CALIBRATION_COUNT 20                  // how many measurements to average when determining initial altitude
@@ -52,9 +53,12 @@
 // Peripheral globals
 Adafruit_MMA8451 mma = Adafruit_MMA8451();
 Adafruit_BMP3XX bmp;
+#ifdef TEST_MODE
 Adafruit_SSD1306 display(128, 64, &Wire, -1);  // select reset pin (just set to any unused pin)
+#endif
 Arducam_Mega cam(CAM_CS);
 Servo servo;
+SPIClass *spi = &SPI;
 
 // Function definitions
 void write_pic(Arducam_Mega &cam, File dest);
@@ -127,6 +131,9 @@ void setup() {
   // init serial
   Serial.begin(115200);
 
+  Wire.begin();
+  Wire.setClock(50000);
+
   // setup OLED if test mode is enabled
   #ifdef TEST_MODE
     display.begin(SSD1306_SWITCHCAPVCC, 0x3c);  // i2c address
@@ -135,13 +142,15 @@ void setup() {
   #endif
 
   // setup MMA
+  Serial.println("Starting MMA");
   if (!mma.begin()) {
     Serial.println("Couldnt start MMA");
     while (1) {}
   }
   mma.setRange(MMA8451_RANGE_2_G);
-
+  
   // setup BMP
+  Serial.println("Starting BMP");
   if (!bmp.begin_I2C()) {  // hardware I2C mode, can pass in address & alt Wire
     Serial.println("Couldn't start BMP");
     while (1) {}
@@ -157,14 +166,17 @@ void setup() {
   bmp.performReading();
 
   // init servo
+  Serial.println("Starting servo");
   servo.attach(SERVO_PIN);
   servo.write(SERVO_STOW_POS);
 
   // init ArduCam, must be done before SD setup so CS lines are configured properly
+  Serial.println("Starting cam");
   cam.begin();
 
   // setup SD
-  if (!SD.begin(SD_CS)) {
+  Serial.println("Starting SD");
+  if (!SD.begin(SD_CS, *spi, SPI_CLOCK_FREQ)) {
     Serial.println("Card mount failed");
     sd_fail = true;
   } else if (SD.cardType() == CARD_NONE) {
@@ -187,7 +199,7 @@ void setup() {
   }
 
   // Must be called after setting up SD and ArduCam since they will reset this
-  SPI.setClockDivider(SPI_CLOCK_DIV);
+  SPI.setFrequency(SPI_CLOCK_FREQ);
 
   if (!sd_fail) {
     // Pick base directory for this flight
@@ -202,12 +214,14 @@ void setup() {
     sprintf(logpath, "%s/data.csv", base_dir);
 
     // Write CSV header
-    File log_file = SD.open(logpath, FILE_APPEND);
+    File log_file = SD.open(logpath, FILE_WRITE);
     if (log_file) {
       log_file.println("index,temp,pressure,altitude,accelx,accely,accelz,accel_filtered,ascent_velocity,state");
       log_file.close();
     }
   }
+
+  Serial.println("Creating tasks");
 
   // Create task for sensor checks
   xTaskCreatePinnedToCore(
@@ -226,7 +240,7 @@ void setup() {
     "Camera Capture",
     4096,
     NULL,
-    tskIDLE_PRIORITY,  // Lowest possible priority, see https://www.freertos.org/Documentation/02-Kernel/02-Kernel-features/01-Tasks-and-co-routines/15-Idle-task
+    tskIDLE_PRIORITY,  // Lowest possible priority, see   
     &camera_capture,
     0
   );
@@ -246,6 +260,7 @@ void setup() {
   vTaskDelay(500 / portTICK_PERIOD_MS);
 
   // Unsuspend tasks
+  Serial.println("Starting tasks");
   vTaskResume(check_altitude);
   if (!sd_fail) {
     vTaskResume(camera_capture);
@@ -470,31 +485,40 @@ void logData(void *parameter) {
 /* ==== UTILITY FUNCTIONS ==== */
 
 void write_pic(Arducam_Mega &cam, File dest) {
-
   uint8_t prev_byte = 0;
   uint8_t cur_byte = 0;
   uint8_t head_flag = 0;
   unsigned int i = 0;
-  uint8_t image_buf[PIC_BUFFER_SIZE] = { 0 };
-  uint32_t read_len = 0;
+  uint8_t image_buf[PIC_BUFFER_SIZE] = {0};
+  int read_len = 0;
   uint8_t start_offset = 0;
 
   while (cam.getReceivedLength()) {
-    start_offset = 0;
-    if (xSemaphoreTake(spi_mutex, SPI_MUTEX_WAIT) == pdTRUE) {
-      read_len = cam.readBuff(image_buf, PIC_BUFFER_SIZE);
-      xSemaphoreGive(spi_mutex);
-    } else {
-      Serial.println("WARNING: SPI lock timeout exceeded");
-      return;
+    read_len = 0;
+
+    // Fill image_buf in chunks
+    while (read_len < PIC_BUFFER_SIZE && cam.getReceivedLength()) {
+      uint32_t chunk_len = min(254, PIC_BUFFER_SIZE - read_len);
+      if (xSemaphoreTake(spi_mutex, SPI_MUTEX_WAIT) == pdTRUE) {
+        uint32_t actual_read = cam.readBuff(image_buf + read_len, chunk_len);
+        xSemaphoreGive(spi_mutex);
+
+        if (actual_read == 0) {
+          break; // No more data
+        }
+        read_len += actual_read;
+      } else {
+        Serial.println("WARNING: SPI lock timeout exceeded");
+        return;
+      }
     }
-    // Search through buffer for start and end flags
+
+    start_offset = 0;
+
     for (i = 0; i < read_len; i++) {
-      // Store current and previous byte
       prev_byte = cur_byte;
       cur_byte = image_buf[i];
 
-      // Start writing at JPEG file start (0xFFD8)
       if (prev_byte == 0xff && cur_byte == 0xd8) {
         Serial.print("Found jpeg start at i=");
         Serial.println(i);
@@ -503,6 +527,7 @@ void write_pic(Arducam_Mega &cam, File dest) {
         if (xSemaphoreTake(spi_mutex, SPI_MUTEX_WAIT) == pdTRUE) {
           dest.write(0xff);
           dest.write(0xd8);
+          dest.flush();
           xSemaphoreGive(spi_mutex);
         } else {
           Serial.println("WARNING: SPI lock timeout exceeded");
@@ -510,7 +535,6 @@ void write_pic(Arducam_Mega &cam, File dest) {
         }
       }
 
-      // Close file on JPEG file ending (0xFFD9)
       if (head_flag && prev_byte == 0xff && cur_byte == 0xd9) {
         Serial.print("Found jpeg end at i=");
         Serial.println(i);
@@ -529,29 +553,16 @@ void write_pic(Arducam_Mega &cam, File dest) {
       }
     }
 
-    // No end flag found, write the full buffer
     if (head_flag) {
-      /*Serial.print("Writing buffer from ");
-      Serial.print(start_offset);
-      Serial.print(" with len ");
-      Serial.println(PIC_BUFFER_SIZE - start_offset);*/
       if (xSemaphoreTake(spi_mutex, SPI_MUTEX_WAIT) == pdTRUE) {
         dest.write(image_buf + start_offset, read_len - start_offset);
+        dest.flush();
         xSemaphoreGive(spi_mutex);
       } else {
         Serial.println("WARNING: SPI lock timeout exceeded");
         return;
       }
     }
-  }
-
-  // Did not find EOF, corrupted?
-  Serial.println("WARNING: Did not find JPEG file ending in image data, possible corruption");
-  if (xSemaphoreTake(spi_mutex, SPI_MUTEX_WAIT) == pdTRUE) {
-    dest.close();
-    xSemaphoreGive(spi_mutex);
-  } else {
-    Serial.println("WARNING: SPI lock timeout exceeded");
   }
 }
 
