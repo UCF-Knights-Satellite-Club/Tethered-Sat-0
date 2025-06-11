@@ -28,7 +28,7 @@
 
 // Constants
 #define SEALEVELPRESSURE_HPA (1013.25)        // standard pressure at sea level
-#define PIC_BUFFER_SIZE 254                   // buffer size to store images, must be less than 255
+#define PIC_BUFFER_SIZE 4096                   // buffer size to store images, must be less than 255
 #define CAM_IMAGE_MODE CAM_IMAGE_MODE_WQXGA2  // ArduCam image mode
 #define SPI_CLOCK_FREQ 16000000               // SPI clock frequency (ArduCAM and SD card)
 #define I2C_CLOCK_FREQ 50000                  // I2C clock frequency (BMP and MMA)
@@ -97,6 +97,7 @@ float altitude_delta = 0;
 float prev_altitude = 0;
 char logpath[35];
 int logindex = 0;
+uint8_t image_buf[PIC_BUFFER_SIZE] = {0};
 
 // Describes current flight state
 typedef enum {
@@ -489,9 +490,9 @@ void write_pic(Arducam_Mega &cam, File dest) {
   uint8_t cur_byte = 0;
   uint8_t head_flag = 0;
   unsigned int i = 0;
-  uint8_t image_buf[PIC_BUFFER_SIZE] = {0};
   int read_len = 0;
-  uint8_t start_offset = 0;
+  int start_offset = 0;
+  int bytes_written = 0;
 
   while (cam.getReceivedLength()) {
     read_len = 0;
@@ -525,8 +526,8 @@ void write_pic(Arducam_Mega &cam, File dest) {
         head_flag = 1;
         start_offset = i + 1;
         if (xSemaphoreTake(spi_mutex, SPI_MUTEX_WAIT) == pdTRUE) {
-          dest.write(0xff);
-          dest.write(0xd8);
+          bytes_written += dest.write(0xff);
+          bytes_written += dest.write(0xd8);
           dest.flush();
           xSemaphoreGive(spi_mutex);
         } else {
@@ -543,19 +544,33 @@ void write_pic(Arducam_Mega &cam, File dest) {
         Serial.print(" with len ");
         Serial.println(i + 1 - start_offset);
         if (xSemaphoreTake(spi_mutex, SPI_MUTEX_WAIT) == pdTRUE) {
-          dest.write(image_buf + start_offset, i + 1 - start_offset);
+          bytes_written += dest.write(image_buf + start_offset, i + 1 - start_offset);
           dest.close();
           xSemaphoreGive(spi_mutex);
         } else {
           Serial.println("WARNING: SPI lock timeout exceeded");
         }
+        Serial.print(bytes_written);
+        Serial.println(" total bytes written");
         return;
       }
     }
 
     if (head_flag) {
       if (xSemaphoreTake(spi_mutex, SPI_MUTEX_WAIT) == pdTRUE) {
-        dest.write(image_buf + start_offset, read_len - start_offset);
+        int retval;
+        retval = dest.write(image_buf + start_offset, read_len - start_offset);
+        if (retval == 0) {
+          char fp[35];
+          strcpy(fp, dest.path());
+          dest.close();
+          dest = SD.open(fp, FILE_WRITE);
+          dest.seek(dest.size());
+          Serial.print("Write fail! Reopened ");
+          Serial.println(fp);
+          bytes_written += dest.write(image_buf + start_offset, read_len - start_offset);
+        }
+        bytes_written += retval;
         dest.flush();
         xSemaphoreGive(spi_mutex);
       } else {
@@ -564,6 +579,8 @@ void write_pic(Arducam_Mega &cam, File dest) {
       }
     }
   }
+
+  Serial.println("WARNING: No JPEG end flag found, possible corruption");
 }
 
 float calculateAltitude(float atmospheric) {
