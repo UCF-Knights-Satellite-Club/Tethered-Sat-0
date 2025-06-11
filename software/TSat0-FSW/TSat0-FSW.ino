@@ -560,6 +560,11 @@ void write_pic(Arducam_Mega &cam, File dest) {
       if (xSemaphoreTake(spi_mutex, SPI_MUTEX_WAIT) == pdTRUE) {
         int retval;
         retval = dest.write(image_buf + start_offset, read_len - start_offset);
+        /*
+        For some reason, writes occasionally fail with dest.write() returning 0. Once that happens,
+        all subsequent writes will also fail and return 0. Only fix I could find was to close and
+        reopen the file. When opened, the file needs to be seeked to the end.
+        */
         if (retval == 0) {
           char fp[35];
           strcpy(fp, dest.path());
@@ -619,19 +624,19 @@ void preflightRun() {
     flight_state = ASCENT;
     Serial.println("Max preflight altitude exceeded, moving to ASCENT");
 
-  } else if (accel_magnitude >= ASCENT_ACCEL_THRESHOLD) {
+  } /*else if (accel_magnitude >= ASCENT_ACCEL_THRESHOLD) {
     flight_state = ASCENT;
     Serial.println("Acceleration threshold met, moving to ASCENT");
-  }
+  }*/
 }
 
 void ascentRun() {
   // move to FREEFALL if acceleration is close to 0
-  if (accel_magnitude <= FREEFALL_ACCEL_THRESHOLD) {
+  /*if (accel_magnitude <= FREEFALL_ACCEL_THRESHOLD) {
     flight_state = FREEFALL;
     digitalWrite(LED_BUILTIN, HIGH);
     Serial.println("Acceleration threshold met, moving to FREEFALL");
-  }
+  }*/
   // move to FREEFALL if altitude is changing faast enough
   if (altitude_delta_estimate * 1000 / ALTITUDE_CHECK_DELAY < -FREEFALL_VELOCITY_THRESHOLD) {
     flight_state = FREEFALL;
