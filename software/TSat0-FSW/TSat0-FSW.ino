@@ -40,8 +40,8 @@
 #define MAX_PREFLIGHT_ALTITUDE 5              // altitude where PREFLIGHT automatically switches to ASCENT
 #define ALTITUDE_CHECK_DELAY 50               // ms between altitude checks
 #define FREEFALL_ACCEL_THRESHOLD 2            // acceleration below which to switch from ASCENT to FREEFALL
-#define FREEFALL_VELOCITY_THRESHOLD 3         // decent speed above which to swtich from ASCENT to FREEFALL
-#define PARACHUTE_DEPLOY_ALTITUDE 80          // altutude to switch from FREEFALL to LANDING
+#define FREEFALL_VELOCITY_THRESHOLD 5         // decent speed above which to swtich from ASCENT to FREEFALL (FSW=5)
+#define PARACHUTE_DEPLOY_ALTITUDE 80          // altutude to switch from FREEFALL to LANDING (FSW=80)
 #define ALTITUDE_DELTA_FILTER_GAIN 0.95       // between 0 and 1, higher number means each measurement has lower impact on estimate
 #define ACCEL_FILTER_GAIN 0.5                 // same as altitude
 #define SERVO_STOW_POS 110                    // initial servo position
